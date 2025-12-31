@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  # PostgreSQL with pgvector extension
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ai-intel-postgres
+    environment:
+      POSTGRES_USER: aiintel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aiintel_secure_password}
+      POSTGRES_DB: ai_intel
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiintel -d ai_intel"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Ollama for local embeddings (optional - runs on GPU if available)
+  ollama:
+    image: ollama/ollama
+    container_name: ai-intel-ollama
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Redis for caching and rate limiting (optional)
+  redis:
+    image: redis:7-alpine
+    container_name: ai-intel-redis
+    volumes:
+      - redis:/data
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # AI Intel worker (fetching + processing)
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-intel-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://aiintel:${POSTGRES_PASSWORD:-aiintel_secure_password}@postgres:5432/ai_intel
+      REDIS_URL: redis://redis:6379
+      OLLAMA_URL: http://ollama:11434
+      TWITTER_API_KEY: ${TWITTER_API_KEY}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}
+      GLM_API_KEY: ${GLM_API_KEY}
+      GLM_BASE_URL: ${GLM_BASE_URL:-https://api.z.ai/v1}
+    volumes:
+      - ./data:/app/data
+      - ./.claude:/app/.claude  # Skills and agents
+    restart: unless-stopped
+    # Run as cron-like scheduler
+    command: ["node", "dist/scheduler.js"]
+
+volumes:
+  pgdata:
+  ollama:
+  redis:
+
+networks:
+  default:
+    name: ai-intel-network

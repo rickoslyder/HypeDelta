@@ -1,0 +1,194 @@
+{
+  "twitter": [
+    { "handle": "DarioAmodei", "name": "Dario Amodei", "category": "anthropic", "priority": "high" },
+    { "handle": "ch402", "name": "Chris Olah", "category": "anthropic", "priority": "high" },
+    { "handle": "AmandaAskell", "name": "Amanda Askell", "category": "anthropic", "priority": "high" },
+    { "handle": "janleike", "name": "Jan Leike", "category": "anthropic", "priority": "high" },
+    { "handle": "jackclarkSF", "name": "Jack Clark", "category": "anthropic", "priority": "high" },
+    { "handle": "samsamoa", "name": "Sam McCandlish", "category": "anthropic", "priority": "medium" },
+    { "handle": "nottombrown", "name": "Tom Brown", "category": "anthropic", "priority": "medium" },
+
+    { "handle": "sama", "name": "Sam Altman", "category": "openai", "priority": "high" },
+    { "handle": "karpathy", "name": "Andrej Karpathy", "category": "openai", "priority": "high" },
+    { "handle": "ilyasut", "name": "Ilya Sutskever", "category": "openai", "priority": "high" },
+    { "handle": "gdb", "name": "Greg Brockman", "category": "openai", "priority": "medium" },
+    { "handle": "polynoamial", "name": "Noam Brown", "category": "openai", "priority": "high" },
+    { "handle": "lilianweng", "name": "Lilian Weng", "category": "openai", "priority": "high" },
+    { "handle": "_jasonwei", "name": "Jason Wei", "category": "openai", "priority": "high" },
+    { "handle": "johnschulman2", "name": "John Schulman", "category": "openai", "priority": "high" },
+
+    { "handle": "demishassabis", "name": "Demis Hassabis", "category": "deepmind", "priority": "high" },
+    { "handle": "ShaneLegg", "name": "Shane Legg", "category": "deepmind", "priority": "high" },
+    { "handle": "JeffDean", "name": "Jeff Dean", "category": "deepmind", "priority": "high" },
+    { "handle": "OriolVinyalsML", "name": "Oriol Vinyals", "category": "deepmind", "priority": "high" },
+    { "handle": "denny_zhou", "name": "Denny Zhou", "category": "deepmind", "priority": "medium" },
+
+    { "handle": "ylecun", "name": "Yann LeCun", "category": "meta", "priority": "high" },
+    { "handle": "hugo_larochelle", "name": "Hugo Larochelle", "category": "meta", "priority": "medium" },
+
+    { "handle": "TheGregYang", "name": "Greg Yang", "category": "xai", "priority": "high" },
+    { "handle": "jimmybyba", "name": "Jimmy Ba", "category": "xai", "priority": "high" },
+    { "handle": "yuhuaiwu", "name": "Yuhuai (Tony) Wu", "category": "xai", "priority": "medium" },
+    { "handle": "iabasin", "name": "Igor Babuschkin", "category": "xai", "priority": "medium" },
+
+    { "handle": "arthurmensch", "name": "Arthur Mensch", "category": "mistral", "priority": "high" },
+    { "handle": "GusLample", "name": "Guillaume Lample", "category": "mistral", "priority": "medium" },
+    { "handle": "tlacroix_", "name": "Timothee Lacroix", "category": "mistral", "priority": "medium" },
+
+    { "handle": "aidangomez", "name": "Aidan Gomez", "category": "cohere", "priority": "high" },
+    { "handle": "jpineau", "name": "Joelle Pineau", "category": "cohere", "priority": "high" },
+    { "handle": "nickfrosst", "name": "Nick Frosst", "category": "cohere", "priority": "medium" },
+
+    { "handle": "robinrombach", "name": "Robin Rombach", "category": "stability", "priority": "high" },
+    { "handle": "patrick_esser", "name": "Patrick Esser", "category": "stability", "priority": "medium" },
+    { "handle": "a_blattmann", "name": "Andreas Blattmann", "category": "stability", "priority": "medium" },
+
+    { "handle": "ClementDelangue", "name": "Clement Delangue", "category": "huggingface", "priority": "high" },
+    { "handle": "Thom_Wolf", "name": "Thomas Wolf", "category": "huggingface", "priority": "high" },
+    { "handle": "julien_c", "name": "Julien Chaumond", "category": "huggingface", "priority": "high" },
+    { "handle": "_lewtun", "name": "Lewis Tunstall", "category": "huggingface", "priority": "high" },
+    { "handle": "younesbelkada", "name": "Younes Belkada", "category": "huggingface", "priority": "medium" },
+
+    { "handle": "aaborifarhadi", "name": "Ali Farhadi", "category": "ai2", "priority": "medium" },
+    { "handle": "HannaHajishirzi", "name": "Hanna Hajishirzi", "category": "ai2", "priority": "high" },
+    { "handle": "natolambert", "name": "Nathan Lambert", "category": "ai2", "priority": "high" },
+    { "handle": "yaborejin_choi", "name": "Yejin Choi", "category": "ai2", "priority": "high" },
+    { "handle": "etzioni", "name": "Oren Etzioni", "category": "ai2", "priority": "medium" },
+
+    { "handle": "DrJimFan", "name": "Jim Fan", "category": "nvidia", "priority": "high" },
+    { "handle": "AnimaAnandkumar", "name": "Anima Anandkumar", "category": "nvidia", "priority": "high" },
+    { "handle": "sanjafidler", "name": "Sanja Fidler", "category": "nvidia", "priority": "medium" },
+
+    { "handle": "rsalakhu", "name": "Ruslan Salakhutdinov", "category": "academic", "priority": "medium" },
+    { "handle": "pliang", "name": "Percy Liang", "category": "together", "priority": "high" },
+    { "handle": "vipulved", "name": "Vipul Ved Prakash", "category": "together", "priority": "medium" },
+    { "handle": "DaniYogatama", "name": "Dani Yogatama", "category": "reka", "priority": "medium" },
+    { "handle": "ytay", "name": "Yi Tay", "category": "reka", "priority": "high" },
+    { "handle": "c_valenzuelab", "name": "Cristobal Valenzuela", "category": "independent", "priority": "medium" },
+
+    { "handle": "GaryMarcus", "name": "Gary Marcus", "category": "critics", "priority": "high" },
+    { "handle": "emilymbender", "name": "Emily Bender", "category": "critics", "priority": "high" },
+    { "handle": "MelMitchell1", "name": "Melanie Mitchell", "category": "critics", "priority": "high" },
+    { "handle": "fchollet", "name": "Francois Chollet", "category": "critics", "priority": "high" },
+    { "handle": "yoshuabengio", "name": "Yoshua Bengio", "category": "safety", "priority": "high" },
+    { "handle": "rodneyabrooks", "name": "Rodney Brooks", "category": "critics", "priority": "high" },
+    { "handle": "timnitGebru", "name": "Timnit Gebru", "category": "critics", "priority": "high" },
+
+    { "handle": "ESYudkowsky", "name": "Eliezer Yudkowsky", "category": "safety", "priority": "high" },
+    { "handle": "jeremyphoward", "name": "Jeremy Howard", "category": "independent", "priority": "high" },
+    { "handle": "simonw", "name": "Simon Willison", "category": "independent", "priority": "high" },
+    { "handle": "ID_AA_Carmack", "name": "John Carmack", "category": "independent", "priority": "high" },
+    { "handle": "CadeMetz", "name": "Cade Metz", "category": "independent", "priority": "medium" },
+    { "handle": "jeremykahn", "name": "Jeremy Kahn", "category": "independent", "priority": "medium" },
+    { "handle": "willknight", "name": "Will Knight", "category": "independent", "priority": "medium" },
+    { "handle": "drfeifei", "name": "Fei-Fei Li", "category": "academic", "priority": "high" },
+    { "handle": "katecrawford", "name": "Kate Crawford", "category": "critics", "priority": "high" },
+    { "handle": "erikbrynjolfsson", "name": "Erik Brynjolfsson", "category": "academic", "priority": "medium" },
+    { "handle": "NPCollapse", "name": "Connor Leahy", "category": "safety", "priority": "high" },
+    { "handle": "KirkDBorne", "name": "Kirk Borne", "category": "independent", "priority": "medium" }
+  ],
+
+  "substack": [
+    { "url": "https://importai.substack.com/feed", "author": "Jack Clark", "category": "anthropic", "tier": 1 },
+    { "url": "https://thegradient.pub/rss/", "author": "Daniel Bashir", "category": "academic", "tier": 1 },
+    { "url": "https://www.aisnakeoil.com/feed", "author": "Narayanan & Kapoor", "category": "critics", "tier": 1 },
+    { "url": "https://www.interconnects.ai/feed", "author": "Nathan Lambert", "category": "ai2", "tier": 1 },
+    { "url": "https://magazine.sebastianraschka.com/feed", "author": "Sebastian Raschka", "category": "independent", "tier": 1 },
+    { "url": "https://www.latent.space/feed", "author": "swyx & Alessio", "category": "independent", "tier": 1 },
+    { "url": "https://www.deeplearning.ai/the-batch/feed/", "author": "Andrew Ng", "category": "academic", "tier": 1 },
+    { "url": "https://aiguide.substack.com/feed", "author": "Melanie Mitchell", "category": "critics", "tier": 1 },
+
+    { "url": "https://www.oneusefulthing.org/feed", "author": "Ethan Mollick", "category": "academic", "tier": 2 },
+    { "url": "https://www.semianalysis.com/feed", "author": "Dylan Patel", "category": "independent", "tier": 2 },
+    { "url": "https://www.hyperdimensional.co/feed", "author": "Dean W. Ball", "category": "independent", "tier": 2 },
+    { "url": "https://thealgorithmicbridge.substack.com/feed", "author": "Alberto Romero", "category": "independent", "tier": 2 },
+
+    { "url": "https://thezvi.substack.com/feed", "author": "Zvi Mowshowitz", "category": "safety", "tier": 3 },
+    { "url": "https://astralcodexten.substack.com/feed", "author": "Scott Alexander", "category": "safety", "tier": 3 },
+    { "url": "https://newsletter.safe.ai/feed", "author": "Dan Hendrycks", "category": "safety", "tier": 3 },
+
+    { "url": "https://www.therundown.ai/feed", "author": "Rowan Cheung", "category": "independent", "tier": 4 },
+    { "url": "https://bensbites.beehiiv.com/feed", "author": "Ben Tossell", "category": "independent", "tier": 4 },
+    { "url": "https://lastweekin.ai/feed", "author": "Multiple", "category": "independent", "tier": 4 },
+    { "url": "https://newsletter.ruder.io/feed", "author": "Sebastian Ruder", "category": "deepmind", "tier": 4 },
+    { "url": "https://simonw.substack.com/feed", "author": "Simon Willison", "category": "independent", "tier": 4 },
+    { "url": "https://garymarcus.substack.com/feed", "author": "Gary Marcus", "category": "critics", "tier": 1 }
+  ],
+
+  "youtube": [
+    { "id": "UCWN3xxRkmTPmbKwht9FuE5A", "name": "Andrej Karpathy", "category": "openai", "type": "tutorials" },
+    { "id": "UCZHmQk67mN31hHzLZcVbrqQ", "name": "Yannic Kilcher", "category": "independent", "type": "paper_reviews" },
+    { "id": "UCbfYPyITQ-7l4upoX8nvctg", "name": "Two Minute Papers", "category": "independent", "type": "paper_reviews" },
+    { "id": "UCYO_jab_esuFRV4b17AJtAw", "name": "3Blue1Brown", "category": "academic", "type": "tutorials" },
+    { "id": "UCzBjutX2PmitNF4avysL-vg", "name": "StatQuest", "category": "academic", "type": "tutorials" },
+    { "id": "UCcIXc5mJsHVYTZR1maL5l9w", "name": "DeepLearning.AI", "category": "academic", "type": "tutorials" },
+    { "id": "UCfzlCWGWYyIQ0aLC5w48gBQ", "name": "Sentdex", "category": "independent", "type": "tutorials" },
+    { "id": "UCxVqU5e5uIp8K9DkJv7HXGA", "name": "AI Explained", "category": "independent", "type": "paper_reviews" },
+    { "id": "UCMLtBahI5DMrt0NPvDSoIRQ", "name": "Machine Learning Street Talk", "category": "independent", "type": "paper_reviews" },
+    { "id": "UCpZ2V6tS0Rq2G5WlxfRpqpQ", "name": "The AI Epiphany", "category": "independent", "type": "paper_reviews" },
+    { "id": "UC1hJ-Mhdb8fXkHMsKNWkVOw", "name": "Dwarkesh Patel", "category": "independent", "type": "interviews" },
+    { "id": "UCSHZKyawb77ixDdsGog4iWA", "name": "Lex Fridman", "category": "independent", "type": "interviews" }
+  ],
+
+  "blog": [
+    { "url": "https://colah.github.io/rss.xml", "author": "Chris Olah", "category": "anthropic" },
+    { "url": "https://lilianweng.github.io/index.xml", "author": "Lilian Weng", "category": "openai" },
+    { "url": "https://simonwillison.net/atom/everything/", "author": "Simon Willison", "category": "independent" },
+    { "url": "https://rodneybrooks.com/feed/", "author": "Rodney Brooks", "category": "critics" },
+    { "url": "https://karpathy.github.io/feed.xml", "author": "Andrej Karpathy", "category": "openai" },
+    { "url": "https://jalammar.github.io/feed.xml", "author": "Jay Alammar", "category": "independent" },
+    { "url": "https://ruder.io/rss/index.rss", "author": "Sebastian Ruder", "category": "deepmind" },
+
+    { "url": "https://www.anthropic.com/research/rss.xml", "author": "Anthropic Research", "category": "anthropic" },
+    { "url": "https://openai.com/blog/rss/", "author": "OpenAI Blog", "category": "openai" },
+    { "url": "https://deepmind.google/discover/blog/rss.xml", "author": "DeepMind Blog", "category": "deepmind" },
+    { "url": "https://ai.googleblog.com/feeds/posts/default", "author": "Google AI Blog", "category": "deepmind" },
+    { "url": "https://ai.meta.com/blog/rss/", "author": "Meta AI Blog", "category": "meta" },
+
+    { "url": "https://bair.berkeley.edu/blog/feed.xml", "author": "BAIR Blog", "category": "academic" },
+    { "url": "https://ai.stanford.edu/blog/feed.xml", "author": "Stanford AI Lab Blog", "category": "academic" },
+    { "url": "https://www.microsoft.com/en-us/research/feed/", "author": "Microsoft Research", "category": "independent" },
+
+    { "url": "https://alignmentforum.org/feed.xml", "author": "AI Alignment Forum", "category": "safety" },
+    { "url": "https://distill.pub/rss.xml", "author": "Distill.pub", "category": "academic" }
+  ],
+
+  "lesswrong": [
+    { "tag": "ai-safety", "name": "AI Safety", "category": "safety" },
+    { "tag": "alignment", "name": "Alignment", "category": "safety" },
+    { "tag": "interpretability", "name": "Interpretability", "category": "safety" },
+    { "tag": "agi", "name": "AGI", "category": "safety" },
+    { "tag": "machine-learning", "name": "Machine Learning", "category": "independent" }
+  ],
+
+  "arxiv": [
+    { "category": "cs.AI", "name": "Artificial Intelligence" },
+    { "category": "cs.LG", "name": "Machine Learning" },
+    { "category": "cs.CL", "name": "Computation and Language" },
+    { "category": "cs.CV", "name": "Computer Vision" },
+    { "category": "cs.NE", "name": "Neural and Evolutionary Computing" },
+    { "category": "stat.ML", "name": "Machine Learning (Statistics)" }
+  ],
+
+  "bluesky": [
+    { "handle": "rodneyabrooks.bsky.social", "name": "Rodney Brooks", "category": "critics" },
+    { "handle": "melaniemitchell.bsky.social", "name": "Melanie Mitchell", "category": "critics" },
+    { "handle": "simonwillison.net", "name": "Simon Willison", "category": "independent" }
+  ],
+
+  "podcast": [
+    { "name": "Machine Learning Street Talk", "rss": "https://anchor.fm/s/1e4a0eac/podcast/rss", "category": "independent" },
+    { "name": "AXRP", "rss": "https://axrp.net/feed.xml", "category": "safety" },
+    { "name": "The Gradient Podcast", "rss": "https://thegradientpub.substack.com/feed", "category": "academic" },
+    { "name": "Latent Space Podcast", "rss": "https://www.latent.space/feed", "category": "independent" },
+    { "name": "TWIML AI", "rss": "https://twimlai.com/feed/", "category": "independent" },
+    { "name": "Lex Fridman Podcast", "rss": "https://lexfridman.com/feed/podcast/", "category": "independent" },
+    { "name": "Dwarkesh Podcast", "rss": "https://feeds.megaphone.fm/dwarkeshpatel", "category": "independent" },
+    { "name": "80,000 Hours", "rss": "https://feeds.transistor.fm/80-000-hours-podcast", "category": "safety" },
+    { "name": "The Robot Brains", "rss": "https://therobotbrains.libsyn.com/rss", "category": "academic" },
+    { "name": "The Cognitive Revolution", "rss": "https://www.cognitiverevolution.ai/feed", "category": "independent" },
+    { "name": "Gradient Dissent", "rss": "https://feeds.simplecast.com/o8HFE2Nm", "category": "independent" },
+    { "name": "Practical AI", "rss": "https://changelog.com/practicalai/feed", "category": "independent" },
+    { "name": "Hard Fork", "rss": "https://feeds.simplecast.com/l2i9YnTd", "category": "independent" }
+  ]
+}

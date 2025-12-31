@@ -1,0 +1,65 @@
+{
+  "name": "ai-intel-extraction",
+  "version": "0.1.0",
+  "description": "AI Research Intelligence Aggregation & Synthesis System",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "ai-intel": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/cli.ts",
+    "cli": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "scheduler": "tsx src/scheduler.ts",
+    "scheduler:prod": "node dist/scheduler.js",
+    "init-db": "tsx src/cli.ts init",
+    "seed": "tsx -e \"import { seedSources } from './src/fetcher'; seedSources(process.env.DATABASE_URL || 'postgresql://localhost/ai_intel')\"",
+    "fetch": "tsx src/cli.ts fetch --due",
+    "process": "tsx src/cli.ts process",
+    "synthesize": "tsx src/cli.ts synthesize",
+    "digest": "tsx src/cli.ts digest --generate",
+    "status": "tsx src/cli.ts status",
+    "test": "vitest",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.17",
+    "@atproto/api": "^0.12.0",
+    "@extractus/article-extractor": "^8.0.0",
+    "@mozilla/readability": "^0.5.0",
+    "cheerio": "^1.0.0",
+    "commander": "^12.0.0",
+    "jsdom": "^24.0.0",
+    "pg": "^8.11.0",
+    "rss-parser": "^3.13.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^21.1.0",
+    "@types/node": "^20.0.0",
+    "@types/pg": "^8.11.0",
+    "eslint": "^9.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.3.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "author": "",
+  "license": "MIT",
+  "keywords": [
+    "ai",
+    "intelligence",
+    "research",
+    "aggregation",
+    "synthesis",
+    "llm",
+    "claude",
+    "extraction",
+    "claude-agent-sdk"
+  ]
+}
