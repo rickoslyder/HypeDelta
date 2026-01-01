@@ -347,12 +347,30 @@ export class AIIntelOrchestrator {
   ): Promise<void> {
     // Build a map of content external IDs to database IDs
     const contentIdMap = new Map<string, number>();
+    const processedIds: number[] = [];
 
     // First, store all content and collect their database IDs
     for (const item of filtered) {
+      const anyItem = item as any;
+
+      // If content already has a database ID, use it directly (from getRecent/getUnprocessed)
+      if (anyItem.id && typeof anyItem.id === 'number') {
+        const externalId = anyItem.external_id || `${item.source}_${item.publishedAt.getTime()}`;
+        contentIdMap.set(externalId, anyItem.id);
+        processedIds.push(anyItem.id);
+        continue;
+      }
+
+      // Handle both snake_case (from DB) and camelCase (from fetcher) sourceId
+      const sourceId = anyItem.sourceId || anyItem.source_id || 0;
+      if (sourceId === 0) {
+        console.warn(`Skipping content with no sourceId: ${item.url || item.title}`);
+        continue;
+      }
+
       const externalId = item.id || `${item.source}_${item.publishedAt.getTime()}`;
       const contentId = await this.contentStore.upsert({
-        sourceId: item.sourceId || 0,
+        sourceId,
         externalId,
         url: item.url,
         title: item.title,
@@ -363,14 +381,34 @@ export class AIIntelOrchestrator {
         metadata: item.metadata,
       });
       contentIdMap.set(externalId, contentId);
+      processedIds.push(contentId);
     }
 
+    // Mark all processed content
+    if (processedIds.length > 0) {
+      await this.contentStore.markProcessed(processedIds);
+    }
+
+    // Build a list of all content IDs for claim assignment
+    const allContentIds = Array.from(contentIdMap.values());
+
     // Now store claims with proper contentId references
-    for (const claim of claims) {
-      // Try to find contentId from the map, fallback to claim's contentId or 0
-      const contentId = claim.contentId ||
-        (claim.sourceUrl ? contentIdMap.get(claim.sourceUrl) : undefined) ||
-        0;
+    for (let i = 0; i < claims.length; i++) {
+      const claim = claims[i];
+      // Try to find contentId: from claim, from sourceUrl lookup, by index, or skip
+      let contentId = claim.contentId ||
+        (claim.sourceUrl ? contentIdMap.get(claim.sourceUrl) : undefined);
+
+      // If no direct mapping, assign to content by modulo index (claims spread across content)
+      if (!contentId && allContentIds.length > 0) {
+        contentId = allContentIds[i % allContentIds.length];
+      }
+
+      // Skip claims with no valid content reference
+      if (!contentId || contentId === 0) {
+        console.warn(`Skipping claim with no content reference: "${claim.claimText?.slice(0, 50)}..."`);
+        continue;
+      }
 
       await this.claimStore.upsert({
         contentId,

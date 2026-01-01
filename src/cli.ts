@@ -51,6 +51,16 @@ program
   });
 
 program
+  .command('seed')
+  .description('Seed sources from data/sources.json')
+  .action(async () => {
+    const { seedSources } = await import('./fetcher');
+    console.log('Seeding sources...');
+    await seedSources(config.dbUrl);
+    console.log('✓ Sources seeded');
+  });
+
+program
   .command('fetch')
   .description('Fetch content from sources')
   .option('-s, --source <type>', 'Specific source type to fetch')

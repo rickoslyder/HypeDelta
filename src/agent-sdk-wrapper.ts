@@ -253,23 +253,40 @@ Return the result as JSON.`;
    * Filter content for relevance (uses haiku/GLM via subagent)
    */
   async filterContent(content: any[]): Promise<any> {
-    const prompt = `Filter these ${content.length} content items for AI research relevance.
+    // Prepare content with IDs for tracking
+    const contentWithIds = content.slice(0, 20).map((item, idx) => ({
+      idx,
+      id: (item as any).id,
+      author: item.author,
+      content: item.content?.slice(0, 500) || item.content_text?.slice(0, 500) || '',
+      url: item.url
+    }));
 
-Content:
-${JSON.stringify(content.slice(0, 20), null, 2)}
+    const prompt = `You are a content filter for AI research. Assess each item and return ONLY a JSON object.
 
-Use the content-filter-agent to assess each item.
-Return JSON with an "assessments" array containing relevance scores and classifications.`;
-    
+Content items:
+${JSON.stringify(contentWithIds, null, 2)}
+
+For each item, assess:
+- relevance: 0.0-1.0 (how relevant to AI research)
+- topic: scaling|reasoning|agents|safety|interpretability|multimodal|rlhf|robotics|benchmarks|infrastructure|policy|general
+- contentType: prediction|research-hint|opinion|factual|critique|meta|noise
+- authorCategory: lab-researcher|critic|academic|independent|journalist|unknown
+- isSubstantive: true/false
+- brief: 1-sentence summary
+
+IMPORTANT: Return ONLY valid JSON, no markdown, no explanation. Format:
+{"assessments": [{"idx": 0, "relevance": 0.8, "topic": "agents", "contentType": "opinion", "authorCategory": "lab-researcher", "isSubstantive": true, "brief": "..."}]}`;
+
     const result = await this.runQuery(prompt, {
-      allowedTools: ['Task', 'Read'],
-      maxTurns: 10
+      allowedTools: ['Read'],
+      maxTurns: 5
     });
-    
+
     if (!result.success) {
       return { assessments: [] };
     }
-    
+
     return this.parseJsonFromOutput(result.output || '{}');
   }
   
@@ -277,23 +294,49 @@ Return JSON with an "assessments" array containing relevance scores and classifi
    * Extract claims from filtered content
    */
   async extractClaims(content: any[]): Promise<any> {
-    const prompt = `Extract structured claims from these ${content.length} content items.
+    // Prepare content with IDs for tracking
+    const contentWithIds = content.slice(0, 10).map((item, idx) => ({
+      idx,
+      contentId: (item as any).id,
+      author: item.author,
+      content: item.content?.slice(0, 1000) || (item as any).content_text?.slice(0, 1000) || '',
+      topic: item.topic,
+      authorCategory: item.authorCategory
+    }));
 
-Content:
-${JSON.stringify(content.slice(0, 10), null, 2)}
+    const prompt = `You are a claim extractor for AI research content. Extract claims and return ONLY a JSON object.
 
-Use the claim-extractor-agent to analyze each item deeply.
-Return JSON with a "claims" array.`;
-    
+Content items:
+${JSON.stringify(contentWithIds, null, 2)}
+
+For each claim found, extract:
+- contentId: the source content's ID (from input)
+- claimText: the actual claim in clear language
+- claimType: fact|prediction|hint|opinion|critique
+- topic: from source or inferred
+- stance: bullish|bearish|neutral (on AI progress)
+- bullishness: 0.0-1.0
+- confidence: 0.0-1.0 (how confident author seems)
+- timeframe: near-term|medium-term|long-term|null
+- evidenceProvided: strong|moderate|weak|appeal-to-authority
+- quoteworthiness: 0.0-1.0
+- author: from source
+- authorCategory: from source
+
+Extract MULTIPLE claims per source when warranted. Focus on predictions, research hints, and substantive opinions.
+
+IMPORTANT: Return ONLY valid JSON, no markdown. Format:
+{"claims": [{"contentId": 123, "claimText": "...", "claimType": "prediction", ...}]}`;
+
     const result = await this.runQuery(prompt, {
-      allowedTools: ['Task', 'Read', 'Grep'],
-      maxTurns: 15
+      allowedTools: ['Read'],
+      maxTurns: 5
     });
-    
+
     if (!result.success) {
       return { claims: [] };
     }
-    
+
     return this.parseJsonFromOutput(result.output || '{}');
   }
   
