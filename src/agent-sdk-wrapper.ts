@@ -344,42 +344,139 @@ IMPORTANT: Return ONLY valid JSON, no markdown. Format:
    * Synthesize claims into topic-level insights
    */
   async synthesize(claims: any[], topic: string): Promise<any> {
-    const prompt = `Synthesize these ${claims.length} claims about "${topic}".
+    // Group claims by author category for proper synthesis
+    const labClaims = claims.filter(c =>
+      ['anthropic', 'openai', 'deepmind', 'meta', 'google', 'xai', 'mistral'].includes(c.authorCategory?.toLowerCase()) ||
+      c.authorCategory === 'lab-researcher'
+    );
+    const criticClaims = claims.filter(c =>
+      c.authorCategory === 'critic' || c.authorCategory === 'academic'
+    );
+    const independentClaims = claims.filter(c =>
+      c.authorCategory === 'independent' || !c.authorCategory ||
+      !['anthropic', 'openai', 'deepmind', 'meta', 'google', 'xai', 'mistral', 'critic', 'academic', 'lab-researcher'].includes(c.authorCategory?.toLowerCase())
+    );
 
-Claims:
-${JSON.stringify(claims.slice(0, 50), null, 2)}
+    // Calculate sentiment from claims
+    const avgBullishness = (arr: any[]) => {
+      if (arr.length === 0) return 0.5;
+      const sum = arr.reduce((s, c) => s + (c.bullishness ?? 0.5), 0);
+      return sum / arr.length;
+    };
 
-Use the synthesis-agent to produce:
-- Lab consensus vs critic consensus
-- Key agreements and disagreements
-- Hype delta calculation
-- Emerging narratives
+    const labSentiment = avgBullishness(labClaims);
+    const criticSentiment = avgBullishness(criticClaims);
 
-Return as JSON.`;
-    
+    // Format claims for synthesis (limit each category to 30 for token limits)
+    const formatClaims = (arr: any[], limit = 30) => arr.slice(0, limit).map(c => ({
+      text: c.claimText || c.claim_text,
+      author: c.author,
+      stance: c.stance,
+      bullishness: c.bullishness,
+      confidence: c.confidence,
+      claimType: c.claimType || c.claim_type
+    }));
+
+    const prompt = `Use the topic-synthesis skill to synthesize ${claims.length} claims about "${topic}".
+
+## Claim Distribution
+- Lab researcher claims: ${labClaims.length}
+- Critic claims: ${criticClaims.length}
+- Independent claims: ${independentClaims.length}
+
+## Lab Researcher Claims (${labClaims.length} total, showing ${Math.min(30, labClaims.length)}):
+${JSON.stringify(formatClaims(labClaims), null, 2)}
+
+## Critic Claims (${criticClaims.length} total, showing ${Math.min(30, criticClaims.length)}):
+${JSON.stringify(formatClaims(criticClaims), null, 2)}
+
+## Independent Claims (${independentClaims.length} total, showing ${Math.min(30, independentClaims.length)}):
+${JSON.stringify(formatClaims(independentClaims), null, 2)}
+
+## Pre-calculated Sentiment
+- Lab average bullishness: ${labSentiment.toFixed(2)}
+- Critic average bullishness: ${criticSentiment.toFixed(2)}
+- Hype delta: ${(labSentiment - criticSentiment).toFixed(2)}
+
+IMPORTANT: Analyze the actual claim content to identify:
+1. What labs are saying (labConsensus) - 2-3 sentences from the lab claims
+2. What critics are saying (criticConsensus) - 2-3 sentences from critic claims
+3. Where they agree (agreements array) - specific points both sides accept
+4. Where they disagree (disagreements array) - structured with point/labPosition/criticPosition
+5. Emerging narratives - new framings appearing in the claims
+6. A synthesisNarrative - 2 paragraphs summarizing the topic
+
+Return ONLY valid JSON matching the topic-synthesis skill output format.`;
+
     const result = await this.runQuery(prompt, {
-      allowedTools: ['Task', 'Read'],
+      allowedTools: ['Skill'],
+      useSkills: true,
       maxTurns: 10
     });
-    
+
     if (!result.success) {
+      // Return calculated values even on failure
       return {
-        labConsensus: '',
-        criticConsensus: '',
+        labConsensus: `Lab researchers (${labClaims.length} claims) discuss ${topic} with ${labSentiment > 0.6 ? 'optimism' : labSentiment < 0.4 ? 'caution' : 'mixed views'}.`,
+        criticConsensus: criticClaims.length > 0
+          ? `Critics (${criticClaims.length} claims) express ${criticSentiment > 0.6 ? 'measured optimism' : criticSentiment < 0.4 ? 'skepticism' : 'nuanced views'}.`
+          : 'Limited critic discourse on this topic.',
         agreements: [],
         disagreements: [],
-        hypeDelta: { delta: 0, labSentiment: 0.5, criticSentiment: 0.5 }
+        emergingNarratives: [],
+        predictions: [],
+        evidenceQuality: 0.5,
+        hypeDelta: {
+          delta: labSentiment - criticSentiment,
+          labSentiment,
+          criticSentiment,
+          interpretation: labSentiment - criticSentiment > 0.2 ? 'Potentially overhyped' :
+                         labSentiment - criticSentiment < -0.2 ? 'Potentially underhyped' : 'Relatively aligned'
+        },
+        synthesisNarrative: `${topic} discourse includes ${claims.length} claims across lab (${labClaims.length}), critic (${criticClaims.length}), and independent (${independentClaims.length}) sources.`
       };
     }
-    
-    return this.parseJsonFromOutput(result.output || '{}');
+
+    const parsed = this.parseJsonFromOutput(result.output || '{}');
+
+    // Ensure hypeDelta has calculated values if not returned
+    if (!parsed.hypeDelta || typeof parsed.hypeDelta.delta !== 'number') {
+      parsed.hypeDelta = {
+        delta: labSentiment - criticSentiment,
+        labSentiment,
+        criticSentiment,
+        interpretation: labSentiment - criticSentiment > 0.2 ? 'Potentially overhyped' :
+                       labSentiment - criticSentiment < -0.2 ? 'Potentially underhyped' : 'Relatively aligned'
+      };
+    }
+
+    return parsed;
   }
   
   /**
    * Generate weekly digest
    */
   async generateDigest(syntheses: any[], hypeAssessment: any): Promise<string> {
+    // Calculate claim distribution for balanced coverage
+    const claimCounts = syntheses.map(s => ({
+      topic: s.topic,
+      claimCount: s.claimCount || s.claims?.length || 0
+    })).sort((a, b) => b.claimCount - a.claimCount);
+
+    const totalClaims = claimCounts.reduce((sum, t) => sum + t.claimCount, 0);
+    const distribution = claimCounts.map(t => ({
+      ...t,
+      percentage: Math.round(100 * t.claimCount / totalClaims)
+    }));
+
     const prompt = `Generate a weekly AI research digest.
+
+CRITICAL: You MUST cover topics PROPORTIONALLY to their claim volume.
+Do NOT let hype signals dominate the digest. A topic with 15% of claims
+should get roughly 3x the coverage of a topic with 5% of claims.
+
+CLAIM DISTRIBUTION (cover proportionally):
+${distribution.map(t => `- ${t.topic}: ${t.claimCount} claims (${t.percentage}%)`).join('\n')}
 
 Topic Syntheses:
 ${JSON.stringify(syntheses, null, 2)}
@@ -387,14 +484,20 @@ ${JSON.stringify(syntheses, null, 2)}
 Hype Assessment:
 ${JSON.stringify(hypeAssessment, null, 2)}
 
-Use the digest-writer-agent to create an engaging, opinionated digest.
+REQUIREMENTS:
+1. Include a "Topic Breakdown" section covering EACH topic with >3% of claims
+2. The TL;DR must mention topics from across the claim distribution, not just hyped ones
+3. Research Signals must include insights from multimodal, reasoning, agents - not just RLHF/safety
+
+Use the digest-generation skill to create an engaging, balanced digest.
 Return the digest as markdown.`;
-    
+
     const result = await this.runQuery(prompt, {
-      allowedTools: ['Task', 'Write'],
+      allowedTools: ['Task', 'Write', 'Skill'],
+      useSkills: true,
       maxTurns: 10
     });
-    
+
     return result.output || '';
   }
   

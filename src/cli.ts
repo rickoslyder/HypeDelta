@@ -105,16 +105,21 @@ program
     const orchestrator = new AIIntelOrchestrator(config);
     const contentStore = new ContentStore(config.dbUrl);
     
-    console.log(`Processing content from last ${options.days} days...`);
-    
-    // Get unprocessed content
-    const content = await contentStore.getRecent(parseInt(options.days));
-    const toProcess = content.slice(0, parseInt(options.limit));
-    
-    console.log(`Found ${content.length} items, processing ${toProcess.length}`);
-    
+    console.log(`Processing unprocessed content from last ${options.days} days...`);
+
+    // Get unprocessed content (not already processed)
+    const limit = parseInt(options.limit);
+    const content = await contentStore.getUnprocessed(parseInt(options.days), limit);
+
+    console.log(`Found ${content.length} unprocessed items to process`);
+
+    if (content.length === 0) {
+      console.log('No unprocessed content found.');
+      return;
+    }
+
     const startTime = Date.now();
-    const result = await orchestrator.processBatch(toProcess as any);
+    const result = await orchestrator.processBatch(content as any);
     const elapsed = Date.now() - startTime;
     
     console.log('\n📊 Processing Results:');

@@ -108,7 +108,7 @@ describe('AIIntelOrchestrator', () => {
           source: 'twitter',
           sourceType: 'twitter',
           author: 'testuser',
-          content: 'Test content',
+          content: 'This is test content about AI research that demonstrates substantive analysis of model capabilities',
           publishedAt: new Date(),
         },
       ];

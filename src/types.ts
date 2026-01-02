@@ -172,6 +172,7 @@ export interface Disagreement {
 
 export interface TopicSynthesis {
   topic: Topic;
+  claimCount: number; // Number of claims analyzed for this topic
   labConsensus: string;
   criticConsensus: string;
   keyAgreements: string[];

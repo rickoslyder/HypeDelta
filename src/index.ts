@@ -60,6 +60,7 @@ export interface SynthesisResult {
 
 interface TopicSynthesis {
   topic: string;
+  claimCount: number; // For balanced digest coverage
   labConsensus: string;
   criticConsensus: string;
   agreements: string[];
@@ -136,17 +137,27 @@ export class AIIntelOrchestrator {
    */
   async processBatch(rawContent: RawContent[]): Promise<ProcessingResult> {
     console.log(`Processing batch of ${rawContent.length} items`);
-    
+
+    // Mark ALL input content as processed (even if filtered out)
+    const allContentIds = rawContent
+      .map((item: any) => item.id)
+      .filter((id: any) => typeof id === 'number' && id > 0);
+
     const filtered = await this.filterStage(rawContent);
     console.log(`Filtered to ${filtered.length} relevant items`);
-    
+
     const claims = await this.extractStage(filtered);
     console.log(`Extracted ${claims.length} claims`);
-    
+
     const enriched = await this.enrichStage(claims);
-    
+
     await this.storeResults(filtered, enriched);
-    
+
+    // Mark all input content as processed (not just filtered)
+    if (allContentIds.length > 0) {
+      await this.contentStore.markProcessed(allContentIds);
+    }
+
     return {
       processed: rawContent.length,
       relevant: filtered.length,
@@ -199,15 +210,48 @@ export class AIIntelOrchestrator {
   // ============================================================================
   
   private async filterStage(content: RawContent[]): Promise<FilteredContent[]> {
+    // Pre-filter obvious noise before LLM processing
+    const preFiltered = content.filter(item => {
+      const text = item.content || (item as any).content_text || '';
+
+      // Skip retweets
+      if (text.startsWith('RT @')) return false;
+
+      // Skip very short content (< 50 chars)
+      if (text.length < 50) return false;
+
+      // Skip pure link shares with no commentary
+      if (text.match(/^https?:\/\/\S+$/)) return false;
+
+      return true;
+    });
+
+    const skipped = content.length - preFiltered.length;
+    if (skipped > 0) {
+      console.log(`  Pre-filtered ${skipped} noise items (RTs, short, link-only)`);
+    }
+
     if (this.useSkills) {
-      const result = await this.agent.filterContent(content);
-      return this.applyFilterResults(content, result);
+      // Process in batches of 20 (Agent SDK prompt limit)
+      const BATCH_SIZE = 20;
+      const allFiltered: FilteredContent[] = [];
+
+      for (let i = 0; i < preFiltered.length; i += BATCH_SIZE) {
+        const batch = preFiltered.slice(i, i + BATCH_SIZE);
+        console.log(`  Filtering batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(preFiltered.length / BATCH_SIZE)} (${batch.length} items)`);
+
+        const result = await this.agent.filterContent(batch);
+        const filtered = this.applyFilterResults(batch, result);
+        allFiltered.push(...filtered);
+      }
+
+      return allFiltered;
     } else if (this.glm && this.glmFallback) {
-      return this.filterWithGLM(content);
+      return this.filterWithGLM(preFiltered);
     } else {
-      return content.map(c => ({ 
-        ...c, 
-        relevance: 1.0, 
+      return preFiltered.map(c => ({
+        ...c,
+        relevance: 1.0,
         topic: 'general',
         contentType: 'opinion',
         authorCategory: 'unknown',
@@ -266,8 +310,20 @@ export class AIIntelOrchestrator {
   
   private async extractStage(content: FilteredContent[]): Promise<ExtractedClaim[]> {
     if (this.useSkills) {
-      const result = await this.agent.extractClaims(content);
-      return this.normalizeClaimResults(result);
+      // Process in batches of 10 (Agent SDK prompt limit for deeper extraction)
+      const BATCH_SIZE = 10;
+      const allClaims: ExtractedClaim[] = [];
+
+      for (let i = 0; i < content.length; i += BATCH_SIZE) {
+        const batch = content.slice(i, i + BATCH_SIZE);
+        console.log(`  Extracting batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(content.length / BATCH_SIZE)} (${batch.length} items)`);
+
+        const result = await this.agent.extractClaims(batch);
+        const claims = this.normalizeClaimResults(result);
+        allClaims.push(...claims);
+      }
+
+      return allClaims;
     } else {
       return this.extractDirect(content);
     }
@@ -448,9 +504,10 @@ export class AIIntelOrchestrator {
 
   private async synthesizeTopic(topic: string, claims: any[]): Promise<TopicSynthesis> {
     const result = await this.agent.synthesize(claims, topic);
-    
+
     return {
       topic,
+      claimCount: claims.length, // Include for balanced digest coverage
       labConsensus: result.labConsensus || '',
       criticConsensus: result.criticConsensus || '',
       agreements: result.agreements || [],
