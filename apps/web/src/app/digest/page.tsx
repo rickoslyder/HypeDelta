@@ -14,7 +14,7 @@ export default async function DigestPage() {
 
   if (!synthesis) {
     return (
-      <div className="container max-w-screen-2xl py-8 px-4 md:px-6">
+      <div className="w-full px-4 md:px-8 lg:px-12 py-8">
         <div className="flex flex-col items-center justify-center min-h-[400px] text-center">
           <AlertCircle className="h-12 w-12 text-muted-foreground mb-4" />
           <h1 className="text-2xl font-bold mb-2">No Digest Available</h1>
@@ -29,7 +29,7 @@ export default async function DigestPage() {
   const hypeAssessment = synthesis.hype_assessment;
 
   return (
-    <div className="container max-w-screen-2xl py-8 px-4 md:px-6">
+    <div className="w-full px-4 md:px-8 lg:px-12 py-8">
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-2 text-muted-foreground mb-2">

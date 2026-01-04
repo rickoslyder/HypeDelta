@@ -17,7 +17,7 @@ export default function ClaimsError({
   }, [error]);
 
   return (
-    <div className="container max-w-screen-2xl py-8 px-4 md:px-6">
+    <div className="w-full px-4 md:px-8 lg:px-12 py-8">
       <Card className="max-w-lg mx-auto">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-destructive">

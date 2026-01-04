@@ -3,7 +3,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 export default function TopicLoading() {
   return (
-    <div className="container max-w-screen-2xl py-8 px-4 md:px-6">
+    <div className="w-full px-4 md:px-8 lg:px-12 py-8">
       {/* Back link */}
       <Skeleton className="h-4 w-28 mb-6" />
 

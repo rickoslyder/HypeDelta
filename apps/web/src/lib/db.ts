@@ -70,11 +70,12 @@ export async function getClaims(options: {
   author?: string;
   authorCategory?: string;
   claimType?: string;
+  search?: string;
   days?: number;
   limit?: number;
   offset?: number;
 }): Promise<{ claims: Claim[]; total: number }> {
-  const { topic, author, authorCategory, claimType, days = 30, limit = 50, offset = 0 } = options;
+  const { topic, author, authorCategory, claimType, search, days = 30, limit = 50, offset = 0 } = options;
 
   // Input validation
   const safeDays = Math.max(1, Math.min(365, Math.floor(Number(days) || 30)));
@@ -107,6 +108,12 @@ export async function getClaims(options: {
   if (claimType) {
     conditions.push(`claim_type = $${paramIndex++}`);
     params.push(claimType);
+  }
+
+  if (search && search.trim()) {
+    // Use ILIKE for case-insensitive text search
+    conditions.push(`claim_text ILIKE $${paramIndex++}`);
+    params.push(`%${search.trim()}%`);
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";

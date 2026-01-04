@@ -32,7 +32,7 @@ export default async function ResearchersPage() {
   );
 
   return (
-    <div className="container max-w-screen-2xl py-8 px-4 md:px-6">
+    <div className="w-full px-4 md:px-8 lg:px-12 py-8">
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-2">Researchers</h1>
         <p className="text-muted-foreground">

@@ -18,7 +18,7 @@ export default function TopicError({
   }, [error]);
 
   return (
-    <div className="container max-w-screen-2xl py-8 px-4 md:px-6">
+    <div className="w-full px-4 md:px-8 lg:px-12 py-8">
       <Link
         href="/topics"
         className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mb-6"

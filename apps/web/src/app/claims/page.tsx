@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { getClaims } from "@/lib/db";
 import { Pagination } from "@/components/ui/pagination";
+import { SearchInput } from "@/components/search-input";
 import { MessageSquare, Calendar, User, ExternalLink, X } from "lucide-react";
 import Link from "next/link";
 
@@ -39,6 +40,7 @@ interface ClaimsPageProps {
     type?: string;
     days?: string;
     page?: string;
+    q?: string;
   }>;
 }
 
@@ -52,6 +54,7 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
     topic: params.topic,
     author: params.author,
     claimType: params.type,
+    search: params.q,
     days,
     limit: ITEMS_PER_PAGE,
     offset,
@@ -65,7 +68,7 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
   const uniqueTypes = [...new Set(claims.map((c) => c.claim_type))].filter(Boolean);
 
   return (
-    <div className="container max-w-screen-2xl py-8 px-4 md:px-6">
+    <div className="w-full px-4 md:px-8 lg:px-12 py-8">
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-2">Claims Browser</h1>
         <p className="text-muted-foreground">
@@ -73,13 +76,21 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
         </p>
       </div>
 
-      {/* Filters */}
+      {/* Search and Filters */}
       <Card className="mb-6">
         <CardHeader>
-          <CardTitle className="text-lg">Filters</CardTitle>
+          <CardTitle className="text-lg">Search & Filters</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="flex flex-wrap gap-4">
+            {/* Text search */}
+            <div className="w-full sm:w-80">
+              <SearchInput
+                placeholder="Search claims..."
+                paramName="q"
+              />
+            </div>
+
             {/* Topic filter */}
             <div className="space-y-2">
               <label className="text-sm font-medium">Topic</label>
@@ -154,12 +165,12 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
             </div>
 
             {/* Reset Filters */}
-            {(params.topic || params.type || params.days) && (
+            {(params.topic || params.type || params.days || params.q) && (
               <div className="flex items-end">
                 <Link href="/claims">
                   <Button variant="ghost" size="sm" className="text-muted-foreground">
                     <X className="h-4 w-4 mr-1" />
-                    Reset Filters
+                    Reset All
                   </Button>
                 </Link>
               </div>
@@ -171,7 +182,8 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
       {/* Results count */}
       <p className="text-sm text-muted-foreground mb-4">
         Showing {offset + 1}-{Math.min(offset + claims.length, total)} of {total} claims
-        {params.topic && ` for topic "${params.topic}"`}
+        {params.q && ` matching "${params.q}"`}
+        {params.topic && ` in topic "${params.topic}"`}
         {params.type && ` of type "${params.type}"`}
       </p>
 
@@ -289,8 +301,8 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
           <MessageSquare className="h-12 w-12 text-muted-foreground mb-4" />
           <h2 className="text-xl font-semibold mb-2">No Claims Found</h2>
           <p className="text-muted-foreground">
-            {params.topic || params.type
-              ? "Try adjusting your filters."
+            {params.q || params.topic || params.type
+              ? "Try adjusting your search or filters."
               : "Process some content to see claims appear here."}
           </p>
         </div>
@@ -304,6 +316,7 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
             totalPages={totalPages}
             baseUrl="/claims"
             searchParams={{
+              q: params.q,
               topic: params.topic,
               type: params.type,
               days: params.days,

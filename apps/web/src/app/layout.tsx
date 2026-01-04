@@ -4,6 +4,7 @@ import Link from "next/link";
 import "./globals.css";
 import { Providers } from "./providers";
 import { CommandPalette } from "@/components/command-palette";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -23,7 +24,7 @@ export const metadata: Metadata = {
 function Header() {
   return (
     <header className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="container flex h-14 max-w-screen-2xl items-center px-4 md:px-6">
+      <div className="flex h-14 w-full items-center px-4 md:px-8 lg:px-12">
         <Link href="/" className="mr-6 flex items-center space-x-2">
           <span className="font-bold text-xl">HypeDelta</span>
         </Link>
@@ -53,10 +54,11 @@ function Header() {
             Researchers
           </Link>
         </nav>
-        <div className="flex flex-1 items-center justify-end gap-4">
+        <div className="flex flex-1 items-center justify-end gap-2">
           <CommandPalette
             topics={["agents", "scaling", "reasoning", "safety", "multimodal", "robotics", "rlhf", "interpretability"]}
           />
+          <ThemeToggle />
           <Link
             href="/admin"
             className="text-sm text-foreground/60 transition-colors hover:text-foreground"
@@ -84,7 +86,7 @@ export default function RootLayout({
             <Header />
             <main className="flex-1">{children}</main>
             <footer className="border-t py-6 md:py-0">
-              <div className="container flex h-14 max-w-screen-2xl items-center justify-between px-4 md:px-6 text-sm text-muted-foreground">
+              <div className="flex h-14 w-full items-center justify-between px-4 md:px-8 lg:px-12 text-sm text-muted-foreground">
                 <p>HypeDelta - AI Research Intelligence</p>
                 <p>Updated weekly</p>
               </div>

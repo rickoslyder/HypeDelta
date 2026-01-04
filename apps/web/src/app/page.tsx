@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { ExpandableText } from "@/components/expandable-text";
 import { getSystemStatus, getTopicStats, getLatestSynthesis } from "@/lib/db";
 import { ArrowRight, TrendingUp, TrendingDown, Activity, FileText, Users, Database } from "lucide-react";
 
@@ -21,7 +22,7 @@ export default async function HomePage() {
   } | null;
 
   return (
-    <div className="container max-w-screen-2xl py-8 px-4 md:px-6">
+    <div className="w-full px-4 md:px-8 lg:px-12 py-8">
       {/* Hero Section */}
       <div className="flex flex-col items-center text-center mb-12">
         <h1 className="text-4xl font-bold tracking-tight mb-4">
@@ -163,11 +164,13 @@ export default async function HomePage() {
                 </div>
                 <div className="space-y-2">
                   {hypeAssessment?.overhyped?.slice(0, 3).map((item) => (
-                    <div key={item.topic} className="flex items-center justify-between p-2 rounded bg-red-50 dark:bg-red-950/30">
-                      <Badge variant="outline" className="capitalize">{item.topic}</Badge>
-                      <span className="text-xs text-muted-foreground truncate max-w-[200px]">
-                        {item.reason?.slice(0, 50)}...
-                      </span>
+                    <div key={item.topic} className="flex items-start gap-2 p-2 rounded bg-red-50 dark:bg-red-950/30">
+                      <Badge variant="outline" className="capitalize flex-shrink-0">{item.topic}</Badge>
+                      <ExpandableText
+                        text={item.reason || ""}
+                        maxLength={60}
+                        className="text-xs text-muted-foreground flex-1"
+                      />
                     </div>
                   )) || (
                     <p className="text-sm text-muted-foreground">No synthesis data available</p>
@@ -183,11 +186,13 @@ export default async function HomePage() {
                 </div>
                 <div className="space-y-2">
                   {hypeAssessment?.underhyped?.slice(0, 3).map((item) => (
-                    <div key={item.topic} className="flex items-center justify-between p-2 rounded bg-green-50 dark:bg-green-950/30">
-                      <Badge variant="outline" className="capitalize">{item.topic}</Badge>
-                      <span className="text-xs text-muted-foreground truncate max-w-[200px]">
-                        {item.reason?.slice(0, 50)}...
-                      </span>
+                    <div key={item.topic} className="flex items-start gap-2 p-2 rounded bg-green-50 dark:bg-green-950/30">
+                      <Badge variant="outline" className="capitalize flex-shrink-0">{item.topic}</Badge>
+                      <ExpandableText
+                        text={item.reason || ""}
+                        maxLength={60}
+                        className="text-xs text-muted-foreground flex-1"
+                      />
                     </div>
                   )) || (
                     <p className="text-sm text-muted-foreground">No synthesis data available</p>
