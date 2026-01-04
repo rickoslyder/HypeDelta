@@ -56,6 +56,23 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Next.js web frontend
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: ai-intel-web
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://aiintel:${POSTGRES_PASSWORD:-aiintel_secure_password}@postgres:5432/ai_intel
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
   # AI Intel worker (fetching + processing)
   worker:
     build:

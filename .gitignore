@@ -11,6 +11,10 @@ dist/
 build/
 *.tsbuildinfo
 
+# Next.js
+apps/web/.next/
+apps/web/out/
+
 # IDE
 .idea/
 .vscode/
