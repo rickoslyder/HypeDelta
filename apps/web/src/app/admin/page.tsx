@@ -13,6 +13,7 @@ import {
   CheckCircle,
   AlertCircle,
   Clock,
+  Target,
 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -37,7 +38,7 @@ export default async function AdminDashboardPage() {
       </div>
 
       {/* Quick Actions */}
-      <div className="grid gap-4 md:grid-cols-3 mb-8">
+      <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-5 mb-8">
         <Link href="/admin/operations">
           <Card className="hover:bg-accent transition-colors cursor-pointer h-full">
             <CardHeader>
@@ -46,7 +47,7 @@ export default async function AdminDashboardPage() {
                 Operations
               </CardTitle>
               <CardDescription>
-                Trigger fetch, process, and synthesis operations.
+                Trigger fetch, process, and synthesis.
               </CardDescription>
             </CardHeader>
           </Card>
@@ -59,22 +60,50 @@ export default async function AdminDashboardPage() {
                 Sources
               </CardTitle>
               <CardDescription>
-                Manage researcher sources and feeds.
+                Manage researcher sources.
               </CardDescription>
             </CardHeader>
           </Card>
         </Link>
-        <Card className="opacity-60">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Settings className="h-5 w-5" />
-              Settings
-            </CardTitle>
-            <CardDescription>
-              System configuration (coming soon).
-            </CardDescription>
-          </CardHeader>
-        </Card>
+        <Link href="/admin/activity">
+          <Card className="hover:bg-accent transition-colors cursor-pointer h-full">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Activity className="h-5 w-5" />
+                Activity
+              </CardTitle>
+              <CardDescription>
+                View recent operations and logs.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+        <Link href="/admin/predictions">
+          <Card className="hover:bg-accent transition-colors cursor-pointer h-full">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Target className="h-5 w-5" />
+                Predictions
+              </CardTitle>
+              <CardDescription>
+                Track and verify predictions.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+        <Link href="/admin/settings">
+          <Card className="hover:bg-accent transition-colors cursor-pointer h-full">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Settings className="h-5 w-5" />
+                Settings
+              </CardTitle>
+              <CardDescription>
+                System configuration.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
       </div>
 
       {/* System Health */}

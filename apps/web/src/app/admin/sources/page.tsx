@@ -2,7 +2,8 @@ import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { getSources } from "@/lib/db";
-import { ArrowLeft, Users, Building2, AlertTriangle, CheckCircle, ExternalLink } from "lucide-react";
+import { ArrowLeft, Users, Building2, CheckCircle, ExternalLink, RefreshCw } from "lucide-react";
+import { SourceToggle } from "@/components/source-toggle";
 
 export const dynamic = "force-dynamic";
 
@@ -116,9 +117,11 @@ export default async function SourcesPage() {
                           <p className="text-sm text-muted-foreground">{source.author_name}</p>
                         )}
                       </div>
-                      <Badge variant={source.is_active ? "default" : "secondary"}>
-                        {source.is_active ? "Active" : "Inactive"}
-                      </Badge>
+                      <SourceToggle
+                        sourceId={source.id}
+                        isActive={source.is_active}
+                        identifier={source.identifier}
+                      />
                     </div>
 
                     <div className="flex flex-wrap gap-1 mb-3">
@@ -169,17 +172,21 @@ export default async function SourcesPage() {
         ))}
       </div>
 
-      {/* Note about adding sources */}
+      {/* Info about source management */}
       <Card className="mt-6">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <AlertTriangle className="h-5 w-5 text-yellow-500" />
-            Adding Sources
+            <RefreshCw className="h-5 w-5 text-blue-500" />
+            Source Management
           </CardTitle>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground">
+          <p className="mb-3">
+            Toggle the switch next to each source to activate or deactivate it.
+            Inactive sources will not be fetched during operations.
+          </p>
           <p>
-            To add or modify sources, edit the database directly or use the CLI:
+            To add new sources, use the CLI:
           </p>
           <pre className="mt-2 p-3 bg-muted rounded-md text-xs">
             npm run add-source -- --identifier="username" --type="twitter" --category="lab-researcher"
