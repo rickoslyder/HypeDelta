@@ -35,7 +35,8 @@ const config = {
   dbUrl: process.env.DATABASE_URL || 'postgresql://localhost/ai_intel',
   embeddingProvider: (process.env.EMBEDDING_PROVIDER || 'ollama') as 'ollama' | 'openai' | 'voyage',
   useSkills: process.env.USE_SKILLS !== 'false',
-  glmFallback: process.env.GLM_FALLBACK === 'true'
+  glmFallback: process.env.GLM_FALLBACK === 'true',
+  filterStrategy: (process.env.FILTER_STRATEGY === 'direct' ? 'direct' : 'agent') as 'agent' | 'direct'
 };
 
 // ============================================================================

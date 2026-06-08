@@ -19,6 +19,7 @@ import { AIIntelAgent, GLMClient, ZAI_CONFIG } from './agent-sdk-wrapper';
 import { ContentStore, ClaimStore, SynthesisStore, type EnrichedClaim } from './storage';
 import { EmbeddingService } from './embeddings';
 import { FILTER_PROMPT } from './prompts';
+import { FilterResponseSchema } from './schemas';
 import type {
   RawContent,
   FilteredContent,
@@ -37,6 +38,13 @@ export interface OrchestratorConfig {
   embeddingProvider?: 'ollama' | 'openai' | 'voyage';
   useSkills?: boolean;
   glmFallback?: boolean;
+  /**
+   * How the filter stage runs:
+   * - 'agent' (default): via the Claude Agent SDK harness + skills.
+   * - 'direct' (experimental): a direct GLM API call with schema-validated JSON
+   *   output. Cheaper/faster/deterministic; needs real-API quality validation.
+   */
+  filterStrategy?: 'agent' | 'direct';
 }
 
 export interface ProcessingResult {
@@ -113,21 +121,26 @@ export class AIIntelOrchestrator {
   private embeddings: EmbeddingService;
   private useSkills: boolean;
   private glmFallback: boolean;
-  
+  private filterStrategy: 'agent' | 'direct';
+
   constructor(config: OrchestratorConfig) {
     this.agent = new AIIntelAgent({
       projectDir: config.projectDir
     });
-    
-    if (config.glmFallback) {
+
+    this.filterStrategy = config.filterStrategy || 'agent';
+
+    // A GLM client is needed for the legacy fallback and for the direct filter
+    // strategy (which calls the model API directly with structured output).
+    if (config.glmFallback || this.filterStrategy === 'direct') {
       this.glm = new GLMClient();
     }
-    
+
     this.contentStore = new ContentStore(config.dbUrl);
     this.claimStore = new ClaimStore(config.dbUrl);
     this.synthesisStore = new SynthesisStore(config.dbUrl);
     this.embeddings = new EmbeddingService(config.embeddingProvider || 'ollama');
-    
+
     this.useSkills = config.useSkills !== false;
     this.glmFallback = config.glmFallback || false;
   }
@@ -231,6 +244,12 @@ export class AIIntelOrchestrator {
       console.log(`  Pre-filtered ${skipped} noise items (RTs, short, link-only)`);
     }
 
+    // Experimental: bypass the agentic harness and call the model directly with
+    // schema-validated JSON output.
+    if (this.filterStrategy === 'direct') {
+      return this.filterDirect(preFiltered);
+    }
+
     if (this.useSkills) {
       // Process in batches of 20 (Agent SDK prompt limit)
       const BATCH_SIZE = 20;
@@ -249,18 +268,60 @@ export class AIIntelOrchestrator {
     } else if (this.glm && this.glmFallback) {
       return this.filterWithGLM(preFiltered);
     } else {
-      return preFiltered.map(c => ({
-        ...c,
-        relevance: 1.0,
-        topic: 'general',
-        contentType: 'opinion',
-        authorCategory: 'unknown',
-        isSubstantive: true,
-        brief: ''
-      } as FilteredContent));
+      return preFiltered.map(c => this.passthroughFiltered(c));
     }
   }
-  
+
+  /**
+   * Direct filter strategy: call GLM with a forced JSON response and validate
+   * the result against a zod schema (no agentic harness, no regex scraping).
+   *
+   * Conservative on failure: if a batch can't be parsed/validated, its items
+   * are passed through rather than silently dropped.
+   */
+  private async filterDirect(content: RawContent[]): Promise<FilteredContent[]> {
+    if (!this.glm) {
+      console.warn('Direct filter strategy requires a GLM client; passing content through');
+      return content.map(c => this.passthroughFiltered(c));
+    }
+
+    const BATCH_SIZE = 20;
+    const results: FilteredContent[] = [];
+
+    for (let i = 0; i < content.length; i += BATCH_SIZE) {
+      const batch = content.slice(i, i + BATCH_SIZE);
+      console.log(`  Filtering (direct) batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(content.length / BATCH_SIZE)} (${batch.length} items)`);
+
+      try {
+        const response = await this.glm.complete({
+          messages: [{ role: 'user', content: FILTER_PROMPT(batch) }],
+          temperature: 0.1,
+          responseFormat: { type: 'json_object' }
+        });
+
+        const parsed = FilterResponseSchema.parse(JSON.parse(response.content));
+        results.push(...this.applyFilterResults(batch, parsed));
+      } catch (e) {
+        console.warn(`  Direct filter batch failed (${e instanceof Error ? e.message : e}); passing batch through`);
+        results.push(...batch.map(c => this.passthroughFiltered(c)));
+      }
+    }
+
+    return results;
+  }
+
+  private passthroughFiltered(c: RawContent): FilteredContent {
+    return {
+      ...c,
+      relevance: 1.0,
+      topic: 'general',
+      contentType: 'opinion',
+      authorCategory: 'unknown',
+      isSubstantive: true,
+      brief: ''
+    } as FilteredContent;
+  }
+
   private async filterWithGLM(content: RawContent[]): Promise<FilteredContent[]> {
     const BATCH_SIZE = 20;
     const results: FilteredContent[] = [];
