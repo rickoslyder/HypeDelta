@@ -7,11 +7,15 @@ import { Button } from "@/components/ui/button";
 import { Lock, Loader2, AlertCircle } from "lucide-react";
 
 function LoginForm() {
-  const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(
+    searchParams.get("error") === "not-configured"
+      ? "Admin access is not configured. Set ADMIN_PASSWORD to enable login."
+      : ""
+  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,6 +32,10 @@ function LoginForm() {
       if (response.ok) {
         const redirect = searchParams.get("redirect") || "/admin";
         router.push(redirect);
+      } else if (response.status === 503) {
+        setError("Admin access is not configured. Set ADMIN_PASSWORD to enable login.");
+      } else if (response.status === 429) {
+        setError("Too many failed attempts. Please wait before trying again.");
       } else {
         setError("Invalid password");
       }

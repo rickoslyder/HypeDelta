@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runFetch, isOperationRunning } from "@/lib/cli-runner";
+import { isAuthenticatedRequest } from "@/lib/auth";
 
 export async function POST(request: NextRequest) {
   try {
+    if (!(await isAuthenticatedRequest(request))) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     // Check if fetch is already running
     if (isOperationRunning("fetch")) {
       return NextResponse.json(

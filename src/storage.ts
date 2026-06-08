@@ -577,12 +577,22 @@ export class SourceStore extends BaseStore {
 // DATABASE INITIALIZATION
 // ============================================================================
 
-export async function initializeDatabase(connectionString: string): Promise<void> {
+export async function initializeDatabase(
+  connectionString: string,
+  embeddingDimension: number = 768
+): Promise<void> {
   const pool = new Pool({ connectionString });
-  
+
+  // Guard: dimension is interpolated into DDL, so it must be a safe integer.
+  const dim = Math.floor(embeddingDimension);
+  if (!Number.isInteger(dim) || dim < 1 || dim > 16000) {
+    await pool.end();
+    throw new Error(`Invalid embedding dimension: ${embeddingDimension}`);
+  }
+
   // Create extensions
   await pool.query(`CREATE EXTENSION IF NOT EXISTS vector`);
-  
+
   // Create tables
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sources (
@@ -641,10 +651,10 @@ export async function initializeDatabase(connectionString: string): Promise<void
     
     CREATE TABLE IF NOT EXISTS content_embeddings (
       id SERIAL PRIMARY KEY,
-      content_id VARCHAR(100) NOT NULL,
+      content_id VARCHAR(100) NOT NULL,  -- stores the extracted_claims.id this embedding belongs to
       chunk_index INT DEFAULT 0,
       chunk_text TEXT,
-      embedding vector(768),  -- Matches Ollama nomic-embed-text (default provider)
+      embedding vector(${dim}),  -- sized to the configured embedding provider
       UNIQUE(content_id, chunk_index)
     );
     
@@ -679,10 +689,24 @@ export async function initializeDatabase(connectionString: string): Promise<void
     CREATE INDEX IF NOT EXISTS idx_claims_type ON extracted_claims(claim_type);
     CREATE INDEX IF NOT EXISTS idx_claims_author_cat ON extracted_claims(author_category);
     CREATE INDEX IF NOT EXISTS idx_claims_extracted ON extracted_claims(extracted_at);
-    CREATE INDEX IF NOT EXISTS idx_embeddings_vector ON content_embeddings USING ivfflat (embedding vector_cosine_ops);
     CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status);
     CREATE INDEX IF NOT EXISTS idx_predictions_author ON predictions(author);
   `);
-  
+
+  // ivfflat supports up to 2000 dimensions. For larger embeddings (e.g.
+  // OpenAI text-embedding-3-large at 3072) skip the ANN index; queries still
+  // work via exact search.
+  if (dim <= 2000) {
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_embeddings_vector
+        ON content_embeddings USING ivfflat (embedding vector_cosine_ops)
+    `);
+  } else {
+    console.warn(
+      `Embedding dimension ${dim} exceeds ivfflat's 2000-dim limit; ` +
+      `skipping ANN index (exact search will be used).`
+    );
+  }
+
   await pool.end();
 }

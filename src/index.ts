@@ -445,24 +445,23 @@ export class AIIntelOrchestrator {
       await this.contentStore.markProcessed(processedIds);
     }
 
-    // Build a list of all content IDs for claim assignment
-    const allContentIds = Array.from(contentIdMap.values());
+    // The set of content IDs actually stored in this batch. A claim may only
+    // be attributed to one of these.
+    const validContentIds = new Set(contentIdMap.values());
 
     // Now store claims with proper contentId references
-    for (let i = 0; i < claims.length; i++) {
-      const claim = claims[i];
-      // Try to find contentId: from claim, from sourceUrl lookup, by index, or skip
-      let contentId = claim.contentId ||
+    for (const claim of claims) {
+      // Resolve the claim's content reference: prefer the explicit contentId
+      // returned by extraction, then fall back to a sourceUrl lookup.
+      const contentId =
+        (typeof claim.contentId === 'number' ? claim.contentId : undefined) ??
         (claim.sourceUrl ? contentIdMap.get(claim.sourceUrl) : undefined);
 
-      // If no direct mapping, assign to content by modulo index (claims spread across content)
-      if (!contentId && allContentIds.length > 0) {
-        contentId = allContentIds[i % allContentIds.length];
-      }
-
-      // Skip claims with no valid content reference
-      if (!contentId || contentId === 0) {
-        console.warn(`Skipping claim with no content reference: "${claim.claimText?.slice(0, 50)}..."`);
+      // Only accept a reference we actually stored. Never guess an attribution:
+      // for a provenance-driven system, a claim linked to the wrong source is
+      // far worse than a dropped claim.
+      if (!contentId || !validContentIds.has(contentId)) {
+        console.warn(`Dropping claim with unresolved content reference: "${claim.claimText?.slice(0, 50)}..."`);
         continue;
       }
 

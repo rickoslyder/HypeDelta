@@ -14,6 +14,7 @@
 import { Command } from 'commander';
 import { AIIntelOrchestrator } from './index';
 import { initializeDatabase, SourceStore, ContentStore, ClaimStore, SynthesisStore, PredictionTracker } from './storage';
+import { getEmbeddingDimension } from './embeddings';
 import { AIIntelFetcher } from './fetcher';
 import type { SynthesisOptions, ClaimQuery, Topic } from './types';
 
@@ -45,8 +46,12 @@ program
   .command('init')
   .description('Initialize database schema')
   .action(async () => {
-    console.log('Initializing database...');
-    await initializeDatabase(config.dbUrl);
+    const dimension = getEmbeddingDimension(
+      config.embeddingProvider,
+      process.env.EMBEDDING_MODEL
+    );
+    console.log(`Initializing database (embedding dimension: ${dimension})...`);
+    await initializeDatabase(config.dbUrl, dimension);
     console.log('✓ Database initialized');
   });
 

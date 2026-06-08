@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { validateAuthToken } from "@/lib/auth";
-import { cookies } from "next/headers";
+import { isAuthenticatedRequest } from "@/lib/auth";
 import pg from "pg";
 
 const { Pool } = pg;
@@ -13,25 +12,12 @@ function getPool() {
   });
 }
 
-// Validate admin auth
-async function validateAuth(request: NextRequest): Promise<boolean> {
-  const cookieStore = await cookies();
-  const authCookie = cookieStore.get("admin-auth");
-  const secret = process.env.ADMIN_PASSWORD;
-
-  if (!authCookie?.value || !secret) {
-    return false;
-  }
-
-  return validateAuthToken(decodeURIComponent(authCookie.value), secret);
-}
-
 // PATCH /api/admin/sources/[id] - Update source
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  if (!(await validateAuth(request))) {
+  if (!(await isAuthenticatedRequest(request))) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -103,7 +89,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  if (!(await validateAuth(request))) {
+  if (!(await isAuthenticatedRequest(request))) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
