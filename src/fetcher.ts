@@ -65,42 +65,53 @@ export class AIIntelFetcher {
   }> {
     const successful: { source: string; count: number }[] = [];
     const failed: { source: string; error: string }[] = [];
-    
+
+    // Group by source type so same-provider fetches stay sequential (respecting
+    // each provider's rate limits), while different providers run concurrently.
+    const byType = new Map<string, Source[]>();
     for (const source of sources) {
-      try {
-        const content = await this.fetchSource(source);
-        
-        // Store content
-        for (const item of content) {
-          await this.contentStore.upsert({
-            sourceId: source.id!,
-            externalId: item.id || `${source.identifier}_${item.publishedAt.getTime()}`,
-            url: item.url,
-            title: item.title,
-            contentText: item.content,
-            contentType: item.sourceType,
-            author: item.author,
-            publishedAt: item.publishedAt,
-            metadata: item.metadata
+      const group = byType.get(source.type) ?? [];
+      group.push(source);
+      byType.set(source.type, group);
+    }
+
+    await Promise.all(Array.from(byType.values()).map(async (group) => {
+      for (const source of group) {
+        try {
+          const content = await this.fetchSource(source);
+
+          // Store content
+          for (const item of content) {
+            await this.contentStore.upsert({
+              sourceId: source.id!,
+              externalId: item.id || `${source.identifier}_${item.publishedAt.getTime()}`,
+              url: item.url,
+              title: item.title,
+              contentText: item.content,
+              contentType: item.sourceType,
+              author: item.author,
+              publishedAt: item.publishedAt,
+              metadata: item.metadata
+            });
+          }
+
+          // Mark source as fetched
+          await this.sourceStore.markFetched(source.id!);
+
+          successful.push({ source: source.identifier, count: content.length });
+
+          // Rate limit between same-provider sources
+          await this.sleep(1000);
+
+        } catch (error) {
+          failed.push({
+            source: source.identifier,
+            error: error instanceof Error ? error.message : String(error)
           });
         }
-        
-        // Mark source as fetched
-        await this.sourceStore.markFetched(source.id!);
-        
-        successful.push({ source: source.identifier, count: content.length });
-        
-        // Rate limit between sources
-        await this.sleep(1000);
-        
-      } catch (error) {
-        failed.push({ 
-          source: source.identifier, 
-          error: error instanceof Error ? error.message : String(error) 
-        });
       }
-    }
-    
+    }));
+
     return { successful, failed };
   }
   

@@ -27,14 +27,14 @@ function getPool(): InstanceType<typeof Pool> {
   return pool;
 }
 
-// Helper function to execute queries
-async function query<T>(sql: string, params?: unknown[]): Promise<T[]> {
+// Helper function to execute queries (uses the shared singleton pool)
+export async function query<T>(sql: string, params?: unknown[]): Promise<T[]> {
   const client = getPool();
   const result = await client.query(sql, params);
   return result.rows;
 }
 
-async function queryOne<T>(sql: string, params?: unknown[]): Promise<T | null> {
+export async function queryOne<T>(sql: string, params?: unknown[]): Promise<T | null> {
   const rows = await query<T>(sql, params);
   return rows[0] || null;
 }
@@ -87,53 +87,60 @@ export async function getClaims(options: {
   let paramIndex = 1;
 
   // Date filter - parameterized to prevent SQL injection
-  conditions.push(`extracted_at > NOW() - make_interval(days => $${paramIndex++})`);
+  conditions.push(`e.extracted_at > NOW() - make_interval(days => $${paramIndex++})`);
   params.push(safeDays);
 
   if (topic) {
-    conditions.push(`topic = $${paramIndex++}`);
+    conditions.push(`e.topic = $${paramIndex++}`);
     params.push(topic);
   }
 
   if (author) {
-    conditions.push(`author = $${paramIndex++}`);
+    // The authoritative author is the source identifier (extracted_claims.author
+    // is frequently NULL), so filter via the content -> source relationship.
+    conditions.push(`s.identifier = $${paramIndex++}`);
     params.push(author);
   }
 
   if (authorCategory) {
-    conditions.push(`author_category = $${paramIndex++}`);
+    conditions.push(`e.author_category = $${paramIndex++}`);
     params.push(authorCategory);
   }
 
   if (claimType) {
-    conditions.push(`claim_type = $${paramIndex++}`);
+    conditions.push(`e.claim_type = $${paramIndex++}`);
     params.push(claimType);
   }
 
   if (search && search.trim()) {
     // Use ILIKE for case-insensitive text search
-    conditions.push(`claim_text ILIKE $${paramIndex++}`);
+    conditions.push(`e.claim_text ILIKE $${paramIndex++}`);
     params.push(`%${search.trim()}%`);
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const fromClause = `
+     FROM extracted_claims e
+     JOIN content c ON e.content_id = c.id
+     JOIN sources s ON c.source_id = s.id`;
 
   // Get total count
   const countResult = await queryOne<{ count: string }>(
-    `SELECT COUNT(*) as count FROM extracted_claims ${whereClause}`,
+    `SELECT COUNT(*) as count ${fromClause} ${whereClause}`,
     params
   );
   const total = parseInt(countResult?.count || "0", 10);
 
-  // Get claims with aliased fields
+  // Get claims with aliased fields. author_handle resolves to the source
+  // identifier so it is consistent with the researcher views.
   const claims = await query<Claim>(
     `SELECT
-       id, content_id, claim_text, claim_type, topic, stance, bullishness, confidence,
-       timeframe, target_entity, evidence_provided, quoteworthiness, related_to,
-       original_quote as supporting_quote, author as author_handle, author_category,
-       source_url, extracted_at
-     FROM extracted_claims ${whereClause}
-     ORDER BY extracted_at DESC
+       e.id, e.content_id, e.claim_text, e.claim_type, e.topic, e.stance, e.bullishness, e.confidence,
+       e.timeframe, e.target_entity, e.evidence_provided, e.quoteworthiness, e.related_to,
+       e.original_quote as supporting_quote, s.identifier as author_handle, e.author_category,
+       e.source_url, e.extracted_at
+     ${fromClause} ${whereClause}
+     ORDER BY e.extracted_at DESC
      LIMIT $${paramIndex++} OFFSET $${paramIndex}`,
     [...params, safeLimit, safeOffset]
   );
@@ -213,30 +220,28 @@ export interface SynthesisResult {
   created_at: string;
 }
 
-export async function getLatestSynthesis(): Promise<SynthesisResult | null> {
-  const result = await queryOne<{
-    id: number;
-    generated_at: string;
-    lookback_days: number;
-    syntheses: unknown;
-    hype_assessment: unknown;
-    digest: unknown;
-  }>(
-    `SELECT * FROM synthesis_results
-     ORDER BY generated_at DESC
-     LIMIT 1`
-  );
+interface RawSynthesisRow {
+  id: number;
+  generated_at: string;
+  lookback_days: number;
+  syntheses: unknown;
+  hype_assessment: unknown;
+  digest: unknown;
+}
 
-  if (!result) return null;
-
-  // Transform the result to match our interface
+/**
+ * Transform a raw synthesis_results row into the shape the UI expects:
+ * digest -> digest_markdown, remapped hype_assessment fields, and computed
+ * period_start/period_end/created_at.
+ */
+function mapSynthesisRow(result: RawSynthesisRow): SynthesisResult {
   const generatedAt = new Date(result.generated_at);
   const lookbackDays = result.lookback_days || 7;
   const periodStart = new Date(generatedAt);
   periodStart.setDate(periodStart.getDate() - lookbackDays);
 
-  // Map the hype_assessment fields from DB format to expected format
-  // DB uses overhypedTopics/underhypedTopics, UI expects overhyped/underhyped
+  // Map the hype_assessment fields from DB format to expected format.
+  // DB uses overhypedTopics/underhypedTopics, UI expects overhyped/underhyped.
   const rawHype = result.hype_assessment as Record<string, unknown> | null;
   const hypeAssessment: SynthesisResult['hype_assessment'] = rawHype ? {
     overallSentiment: rawHype.overallFieldSentiment as number | undefined,
@@ -265,13 +270,25 @@ export async function getLatestSynthesis(): Promise<SynthesisResult | null> {
   };
 }
 
+export async function getLatestSynthesis(): Promise<SynthesisResult | null> {
+  const result = await queryOne<RawSynthesisRow>(
+    `SELECT * FROM synthesis_results
+     ORDER BY generated_at DESC
+     LIMIT 1`
+  );
+
+  return result ? mapSynthesisRow(result) : null;
+}
+
 export async function getSynthesisHistory(count = 10): Promise<SynthesisResult[]> {
-  return query<SynthesisResult>(
+  const safeCount = Math.max(1, Math.min(100, Math.floor(Number(count) || 10)));
+  const rows = await query<RawSynthesisRow>(
     `SELECT * FROM synthesis_results
      ORDER BY generated_at DESC
      LIMIT $1`,
-    [count]
+    [safeCount]
   );
+  return rows.map(mapSynthesisRow);
 }
 
 // ============================================================================

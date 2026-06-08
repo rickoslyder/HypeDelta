@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runSynthesize, isOperationRunning } from "@/lib/cli-runner";
+import { isAuthenticatedRequest } from "@/lib/auth";
 
 export async function POST(request: NextRequest) {
   try {
+    if (!(await isAuthenticatedRequest(request))) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     // Check if synthesize is already running
     if (isOperationRunning("synthesize")) {
       return NextResponse.json(

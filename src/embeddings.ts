@@ -25,6 +25,33 @@ interface EmbeddingServiceConfig {
 }
 
 // ============================================================================
+// DIMENSION HELPER
+// ============================================================================
+
+/**
+ * Resolve the vector dimension for a provider/model without instantiating a
+ * client (no API key required). Used to size the pgvector column to match the
+ * configured embedding provider.
+ */
+export function getEmbeddingDimension(
+  provider: 'ollama' | 'openai' | 'voyage',
+  model?: string
+): number {
+  switch (provider) {
+    case 'ollama':
+      if (model?.includes('mxbai')) return 1024;
+      if (model?.includes('all-minilm')) return 384;
+      return 768; // nomic-embed-text default
+    case 'openai':
+      return model?.includes('3-large') ? 3072 : 1536;
+    case 'voyage':
+      return 1024;
+    default:
+      return 768;
+  }
+}
+
+// ============================================================================
 // EMBEDDING SERVICE
 // ============================================================================
 

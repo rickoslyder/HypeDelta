@@ -5,7 +5,7 @@ This project uses the **actual** `@anthropic-ai/claude-agent-sdk` package - the 
 ## Installation
 
 ```bash
-npm install @anthropic-ai/claude-agent-sdk zod
+pnpm add @anthropic-ai/claude-agent-sdk zod
 ```
 
 ## Core API

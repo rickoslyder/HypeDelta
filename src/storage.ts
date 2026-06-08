@@ -11,6 +11,7 @@
 import pg from 'pg';
 const { Pool } = pg;
 type PoolType = InstanceType<typeof Pool>;
+type DbClient = pg.PoolClient;
 
 import type { SourceType, ContentCategory } from './types';
 
@@ -111,23 +112,31 @@ export interface Prediction {
 
 class BaseStore {
   protected pool: PoolType;
-  
+
   constructor(connectionString: string) {
     this.pool = new Pool({ connectionString });
   }
-  
-  async query<T>(sql: string, params?: any[]): Promise<T[]> {
-    const result = await this.pool.query(sql, params);
+
+  async query<T>(sql: string, params?: any[], client?: DbClient): Promise<T[]> {
+    const result = await (client ?? this.pool).query(sql, params);
     return result.rows;
   }
-  
-  async queryOne<T>(sql: string, params?: any[]): Promise<T | null> {
-    const rows = await this.query<T>(sql, params);
+
+  async queryOne<T>(sql: string, params?: any[], client?: DbClient): Promise<T | null> {
+    const rows = await this.query<T>(sql, params, client);
     return rows[0] || null;
   }
-  
-  async execute(sql: string, params?: any[]): Promise<void> {
-    await this.pool.query(sql, params);
+
+  async execute(sql: string, params?: any[], client?: DbClient): Promise<void> {
+    await (client ?? this.pool).query(sql, params);
+  }
+
+  /**
+   * Acquire a dedicated client for a multi-statement transaction. The caller
+   * is responsible for BEGIN/COMMIT/ROLLBACK and for calling client.release().
+   */
+  async connect(): Promise<DbClient> {
+    return this.pool.connect();
   }
 }
 
@@ -136,7 +145,7 @@ class BaseStore {
 // ============================================================================
 
 export class ContentStore extends BaseStore {
-  async upsert(content: Content): Promise<number> {
+  async upsert(content: Content, client?: DbClient): Promise<number> {
     const result = await this.queryOne<{ id: number }>(`
       INSERT INTO content (
         source_id, external_id, url, title, content_text, content_html,
@@ -161,8 +170,8 @@ export class ContentStore extends BaseStore {
       content.publishedAt,
       content.wordCount,
       JSON.stringify(content.metadata || {})
-    ]);
-    
+    ], client);
+
     return result!.id;
   }
   
@@ -173,22 +182,23 @@ export class ContentStore extends BaseStore {
   }
   
   async getRecent(days: number, sourceTypes?: string[]): Promise<Content[]> {
+    const safeDays = Math.max(0, Math.floor(Number(days) || 0));
+    const params: any[] = [safeDays];
+
     let sql = `
       SELECT c.*, s.type as source_type, s.author_name, s.category
       FROM content c
       JOIN sources s ON c.source_id = s.id
-      WHERE c.published_at > NOW() - INTERVAL '${days} days'
+      WHERE c.published_at > NOW() - make_interval(days => $1)
     `;
-    
-    const params: any[] = [];
-    
+
     if (sourceTypes?.length) {
-      sql += ` AND s.type = ANY($1)`;
       params.push(sourceTypes);
+      sql += ` AND s.type = ANY($${params.length})`;
     }
-    
+
     sql += ` ORDER BY c.published_at DESC`;
-    
+
     return this.query<Content>(sql, params);
   }
   
@@ -202,23 +212,24 @@ export class ContentStore extends BaseStore {
   }
 
   async getUnprocessed(days: number, limit = 100): Promise<Content[]> {
+    const safeDays = Math.max(0, Math.floor(Number(days) || 0));
     return this.query<Content>(`
       SELECT c.*, s.type as source_type, s.author_name, s.category
       FROM content c
       JOIN sources s ON c.source_id = s.id
-      WHERE c.published_at > NOW() - INTERVAL '${days} days'
+      WHERE c.published_at > NOW() - make_interval(days => $1)
         AND c.processed_at IS NULL
       ORDER BY c.published_at DESC
-      LIMIT $1
-    `, [limit]);
+      LIMIT $2
+    `, [safeDays, limit]);
   }
 
-  async markProcessed(ids: number[]): Promise<void> {
+  async markProcessed(ids: number[], client?: DbClient): Promise<void> {
     if (ids.length === 0) return;
     await this.execute(`
       UPDATE content SET processed_at = NOW()
       WHERE id = ANY($1)
-    `, [ids]);
+    `, [ids], client);
   }
 }
 
@@ -227,9 +238,9 @@ export class ContentStore extends BaseStore {
 // ============================================================================
 
 export class ClaimStore extends BaseStore {
-  async upsert(claim: EnrichedClaim): Promise<string> {
+  async upsert(claim: EnrichedClaim, client?: DbClient): Promise<string> {
     const id = claim.id || this.generateId();
-    
+
     await this.execute(`
       INSERT INTO extracted_claims (
         id, content_id, claim_text, claim_type, topic, stance,
@@ -264,13 +275,13 @@ export class ClaimStore extends BaseStore {
         relatedClaims: claim.relatedClaims,
         potentialContradictions: claim.potentialContradictions
       })
-    ]);
-    
+    ], client);
+
     // Store embedding if present
     if (claim.embedding) {
-      await this.storeEmbedding(id, claim.claimText, claim.embedding);
+      await this.storeEmbedding(id, claim.claimText, claim.embedding, client);
     }
-    
+
     return id;
   }
   
@@ -281,36 +292,39 @@ export class ClaimStore extends BaseStore {
   }
   
   async getRecent(days: number): Promise<ExtractedClaim[]> {
+    const safeDays = Math.max(0, Math.floor(Number(days) || 0));
     return this.query<ExtractedClaim>(`
       SELECT * FROM extracted_claims
-      WHERE extracted_at > NOW() - INTERVAL '${days} days'
+      WHERE extracted_at > NOW() - make_interval(days => $1)
       ORDER BY extracted_at DESC
-    `);
+    `, [safeDays]);
   }
-  
+
   async getByTopic(topic: string, days?: number): Promise<ExtractedClaim[]> {
     let sql = `SELECT * FROM extracted_claims WHERE topic = $1`;
     const params: any[] = [topic];
-    
+
     if (days) {
-      sql += ` AND extracted_at > NOW() - INTERVAL '${days} days'`;
+      params.push(Math.max(0, Math.floor(Number(days) || 0)));
+      sql += ` AND extracted_at > NOW() - make_interval(days => $${params.length})`;
     }
-    
+
     sql += ` ORDER BY extracted_at DESC`;
-    
+
     return this.query<ExtractedClaim>(sql, params);
   }
-  
+
   async getByAuthorCategory(category: string, days?: number): Promise<ExtractedClaim[]> {
     let sql = `SELECT * FROM extracted_claims WHERE author_category = $1`;
     const params: any[] = [category];
-    
+
     if (days) {
-      sql += ` AND extracted_at > NOW() - INTERVAL '${days} days'`;
+      params.push(Math.max(0, Math.floor(Number(days) || 0)));
+      sql += ` AND extracted_at > NOW() - make_interval(days => $${params.length})`;
     }
-    
+
     sql += ` ORDER BY extracted_at DESC`;
-    
+
     return this.query<ExtractedClaim>(sql, params);
   }
   
@@ -349,14 +363,14 @@ export class ClaimStore extends BaseStore {
     }));
   }
   
-  async storeEmbedding(claimId: string, text: string, embedding: number[]): Promise<void> {
+  async storeEmbedding(claimId: string, text: string, embedding: number[], client?: DbClient): Promise<void> {
     await this.execute(`
       INSERT INTO content_embeddings (content_id, chunk_index, chunk_text, embedding)
       VALUES ($1, 0, $2, $3::vector)
       ON CONFLICT (content_id, chunk_index) DO UPDATE SET
         chunk_text = EXCLUDED.chunk_text,
         embedding = EXCLUDED.embedding
-    `, [claimId, text, `[${embedding.join(',')}]`]);
+    `, [claimId, text, `[${embedding.join(',')}]`], client);
   }
   
   private generateId(): string {
@@ -577,12 +591,22 @@ export class SourceStore extends BaseStore {
 // DATABASE INITIALIZATION
 // ============================================================================
 
-export async function initializeDatabase(connectionString: string): Promise<void> {
+export async function initializeDatabase(
+  connectionString: string,
+  embeddingDimension: number = 768
+): Promise<void> {
+  // Guard: dimension is interpolated into DDL, so it must be a safe integer.
+  const dim = Math.floor(embeddingDimension);
+  if (!Number.isInteger(dim) || dim < 1 || dim > 16000) {
+    throw new Error(`Invalid embedding dimension: ${embeddingDimension}`);
+  }
+
   const pool = new Pool({ connectionString });
-  
+
+  try {
   // Create extensions
   await pool.query(`CREATE EXTENSION IF NOT EXISTS vector`);
-  
+
   // Create tables
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sources (
@@ -641,10 +665,10 @@ export async function initializeDatabase(connectionString: string): Promise<void
     
     CREATE TABLE IF NOT EXISTS content_embeddings (
       id SERIAL PRIMARY KEY,
-      content_id VARCHAR(100) NOT NULL,
+      content_id VARCHAR(100) NOT NULL,  -- stores the extracted_claims.id this embedding belongs to
       chunk_index INT DEFAULT 0,
       chunk_text TEXT,
-      embedding vector(768),  -- Matches Ollama nomic-embed-text (default provider)
+      embedding vector(${dim}),  -- sized to the configured embedding provider
       UNIQUE(content_id, chunk_index)
     );
     
@@ -679,10 +703,25 @@ export async function initializeDatabase(connectionString: string): Promise<void
     CREATE INDEX IF NOT EXISTS idx_claims_type ON extracted_claims(claim_type);
     CREATE INDEX IF NOT EXISTS idx_claims_author_cat ON extracted_claims(author_category);
     CREATE INDEX IF NOT EXISTS idx_claims_extracted ON extracted_claims(extracted_at);
-    CREATE INDEX IF NOT EXISTS idx_embeddings_vector ON content_embeddings USING ivfflat (embedding vector_cosine_ops);
     CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status);
     CREATE INDEX IF NOT EXISTS idx_predictions_author ON predictions(author);
   `);
-  
-  await pool.end();
+
+  // ivfflat supports up to 2000 dimensions. For larger embeddings (e.g.
+  // OpenAI text-embedding-3-large at 3072) skip the ANN index; queries still
+  // work via exact search.
+  if (dim <= 2000) {
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_embeddings_vector
+        ON content_embeddings USING ivfflat (embedding vector_cosine_ops)
+    `);
+  } else {
+    console.warn(
+      `Embedding dimension ${dim} exceeds ivfflat's 2000-dim limit; ` +
+      `skipping ANN index (exact search will be used).`
+    );
+  }
+  } finally {
+    await pool.end();
+  }
 }

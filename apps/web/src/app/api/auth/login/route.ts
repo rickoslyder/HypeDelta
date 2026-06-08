@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateAuthToken } from "@/lib/auth";
+import { generateAuthToken, verifyAdminPassword } from "@/lib/auth";
 
 // Simple rate limiting - track failed attempts per IP
 const failedAttempts = new Map<string, { count: number; lastAttempt: number }>();
@@ -54,22 +54,16 @@ export async function POST(request: NextRequest) {
     const { password } = await request.json();
     const expectedPassword = process.env.ADMIN_PASSWORD;
 
-    // If no password is configured, allow any access (development mode)
+    // Fail closed: admin access must be explicitly configured.
     if (!expectedPassword) {
-      const token = generateAuthToken("dev-mode-secret");
-      const response = NextResponse.json({ success: true });
-      response.cookies.set("admin-auth", token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
-        maxAge: 60 * 60 * 24 * 7, // 7 days
-        path: "/",
-      });
-      return response;
+      return NextResponse.json(
+        { error: "Admin access is not configured" },
+        { status: 503 }
+      );
     }
 
-    // Check password
-    if (password !== expectedPassword) {
+    // Check password (constant-time comparison)
+    if (typeof password !== "string" || !(await verifyAdminPassword(password))) {
       recordFailedAttempt(ip);
       return NextResponse.json(
         { error: "Invalid password" },
@@ -80,8 +74,9 @@ export async function POST(request: NextRequest) {
     // Clear failed attempts on success
     clearFailedAttempts(ip);
 
-    // Generate secure token (uses password as HMAC secret, token doesn't contain password)
-    const token = generateAuthToken(expectedPassword);
+    // Generate secure token (HMAC-signed with the password as key; the token
+    // never contains the password itself)
+    const token = await generateAuthToken(expectedPassword);
 
     // Set auth cookie with secure token
     const response = NextResponse.json({ success: true });
