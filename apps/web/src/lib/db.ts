@@ -27,14 +27,14 @@ function getPool(): InstanceType<typeof Pool> {
   return pool;
 }
 
-// Helper function to execute queries
-async function query<T>(sql: string, params?: unknown[]): Promise<T[]> {
+// Helper function to execute queries (uses the shared singleton pool)
+export async function query<T>(sql: string, params?: unknown[]): Promise<T[]> {
   const client = getPool();
   const result = await client.query(sql, params);
   return result.rows;
 }
 
-async function queryOne<T>(sql: string, params?: unknown[]): Promise<T | null> {
+export async function queryOne<T>(sql: string, params?: unknown[]): Promise<T | null> {
   const rows = await query<T>(sql, params);
   return rows[0] || null;
 }

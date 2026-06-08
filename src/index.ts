@@ -382,13 +382,19 @@ export class AIIntelOrchestrator {
   // ============================================================================
   
   private async enrichStage(claims: ExtractedClaim[]): Promise<ExtractedClaim[]> {
-    for (const claim of claims) {
-      try {
-        const embedding = await this.embeddings.embed(claim.claimText);
-        (claim as any).embedding = embedding;
-      } catch (e) {
-        console.warn(`Failed to embed claim: ${e}`);
-      }
+    // Embed in bounded-concurrency chunks rather than one-at-a-time. Per-claim
+    // failures are tolerated (the claim is simply stored without an embedding).
+    const CONCURRENCY = 5;
+    for (let i = 0; i < claims.length; i += CONCURRENCY) {
+      const batch = claims.slice(i, i + CONCURRENCY);
+      await Promise.all(batch.map(async (claim) => {
+        try {
+          const embedding = await this.embeddings.embed(claim.claimText);
+          (claim as any).embedding = embedding;
+        } catch (e) {
+          console.warn(`Failed to embed claim: ${e}`);
+        }
+      }));
     }
     return claims;
   }
