@@ -595,15 +595,15 @@ export async function initializeDatabase(
   connectionString: string,
   embeddingDimension: number = 768
 ): Promise<void> {
-  const pool = new Pool({ connectionString });
-
   // Guard: dimension is interpolated into DDL, so it must be a safe integer.
   const dim = Math.floor(embeddingDimension);
   if (!Number.isInteger(dim) || dim < 1 || dim > 16000) {
-    await pool.end();
     throw new Error(`Invalid embedding dimension: ${embeddingDimension}`);
   }
 
+  const pool = new Pool({ connectionString });
+
+  try {
   // Create extensions
   await pool.query(`CREATE EXTENSION IF NOT EXISTS vector`);
 
@@ -721,6 +721,7 @@ export async function initializeDatabase(
       `skipping ANN index (exact search will be used).`
     );
   }
-
-  await pool.end();
+  } finally {
+    await pool.end();
+  }
 }

@@ -414,8 +414,11 @@ export class AIIntelOrchestrator {
     try {
       await client.query('BEGIN');
 
-      // Build a map of content external IDs to database IDs
+      // Maps from content external IDs and URLs to database IDs. The URL map
+      // lets us resolve direct-extracted claims (USE_SKILLS=false), which carry
+      // a sourceUrl rather than a numeric contentId.
       const contentIdMap = new Map<string, number>();
+      const urlToContentId = new Map<string, number>();
       const processedIds: number[] = [];
 
       // First, store all content and collect their database IDs
@@ -426,6 +429,7 @@ export class AIIntelOrchestrator {
         if (anyItem.id && typeof anyItem.id === 'number') {
           const externalId = anyItem.external_id || `${item.source}_${item.publishedAt.getTime()}`;
           contentIdMap.set(externalId, anyItem.id);
+          if (item.url) urlToContentId.set(item.url, anyItem.id);
           processedIds.push(anyItem.id);
           continue;
         }
@@ -450,6 +454,7 @@ export class AIIntelOrchestrator {
           metadata: item.metadata,
         }, client);
         contentIdMap.set(externalId, contentId);
+        if (item.url) urlToContentId.set(item.url, contentId);
         processedIds.push(contentId);
       }
 
@@ -465,10 +470,13 @@ export class AIIntelOrchestrator {
       // Now store claims with proper contentId references
       for (const claim of claims) {
         // Resolve the claim's content reference: prefer the explicit contentId
-        // returned by extraction, then fall back to a sourceUrl lookup.
+        // returned by extraction, then fall back to a sourceUrl lookup (by URL,
+        // or by external id for callers that pass one as sourceUrl).
         const contentId =
           (typeof claim.contentId === 'number' ? claim.contentId : undefined) ??
-          (claim.sourceUrl ? contentIdMap.get(claim.sourceUrl) : undefined);
+          (claim.sourceUrl
+            ? (urlToContentId.get(claim.sourceUrl) ?? contentIdMap.get(claim.sourceUrl))
+            : undefined);
 
         // Only accept a reference we actually stored. Never guess an attribution:
         // for a provenance-driven system, a claim linked to the wrong source is

@@ -20,8 +20,10 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  const rawCookie = request.cookies.get("admin-auth")?.value;
-  const token = rawCookie ? decodeURIComponent(rawCookie) : undefined;
+  // Next.js already decodes cookie values; our token is plain [0-9a-f:] so no
+  // further decoding is needed. (Calling decodeURIComponent on attacker-supplied
+  // values can throw URIError -> 500, so we avoid it.)
+  const token = request.cookies.get("admin-auth")?.value;
   const isValid = token ? await validateAuthToken(token, expectedPassword) : false;
 
   if (!isValid) {

@@ -148,8 +148,10 @@ export async function isAuthenticatedRequest(request: NextRequest): Promise<bool
   const secret = process.env.ADMIN_PASSWORD;
   if (!secret) return false;
 
+  // Next.js already decodes cookie values; our token is plain [0-9a-f:] so no
+  // further decoding is needed (and decodeURIComponent on malformed input throws).
   const raw = request.cookies.get("admin-auth")?.value;
   if (!raw) return false;
 
-  return validateAuthToken(decodeURIComponent(raw), secret);
+  return validateAuthToken(raw, secret);
 }

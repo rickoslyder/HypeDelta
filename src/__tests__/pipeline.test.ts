@@ -116,6 +116,7 @@ describe('AIIntelOrchestrator', () => {
         content: 'AI reasoning capabilities are improving rapidly and substantively',
         publishedAt: new Date(),
         sourceId: 1,
+        url: 'https://example.com/post/1',
       } as any,
     ];
 
@@ -128,6 +129,9 @@ describe('AIIntelOrchestrator', () => {
       const statements = (pool.query as any).mock.calls.map((c: any[]) => c[0]);
       expect(statements).toContain('BEGIN');
       expect(statements).toContain('COMMIT');
+      // The direct-extracted claim resolves to the stored content via its URL
+      // and is persisted (not dropped).
+      expect(statements.some((s: string) => s.includes('INSERT INTO extracted_claims'))).toBe(true);
     });
 
     it('rolls back and rethrows when a write fails', async () => {
