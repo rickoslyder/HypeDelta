@@ -21,6 +21,12 @@ vi.mock('pg', () => {
   const MockPool = vi.fn(() => ({
     query: mockQuery,
     end: vi.fn(),
+    // storeResults runs inside a transaction; the client reuses mockQuery so
+    // INSERT routing (and BEGIN/COMMIT/ROLLBACK) behave as expected.
+    connect: vi.fn().mockResolvedValue({
+      query: mockQuery,
+      release: vi.fn(),
+    }),
   }));
   return { default: { Pool: MockPool }, Pool: MockPool };
 });
@@ -98,6 +104,52 @@ describe('AIIntelOrchestrator', () => {
       expect(result.processed).toBe(0);
       expect(result.relevant).toBe(0);
       expect(result.claimsExtracted).toBe(0);
+    });
+  });
+
+  describe('storeResults transaction', () => {
+    const sampleContent = () => [
+      {
+        source: 'twitter',
+        sourceType: 'twitter',
+        author: 'testuser',
+        content: 'AI reasoning capabilities are improving rapidly and substantively',
+        publishedAt: new Date(),
+        sourceId: 1,
+      } as any,
+    ];
+
+    it('wraps content and claim writes in a single transaction', async () => {
+      const pool = (orchestrator.contentStore as any).pool;
+
+      await orchestrator.processBatch(sampleContent());
+
+      expect(pool.connect).toHaveBeenCalled();
+      const statements = (pool.query as any).mock.calls.map((c: any[]) => c[0]);
+      expect(statements).toContain('BEGIN');
+      expect(statements).toContain('COMMIT');
+    });
+
+    it('rolls back and rethrows when a write fails', async () => {
+      const pool = (orchestrator.contentStore as any).pool;
+      const client = {
+        query: vi.fn().mockImplementation((sql: string) => {
+          if (sql.includes('INSERT INTO content')) {
+            return Promise.reject(new Error('boom'));
+          }
+          return Promise.resolve({ rows: [] });
+        }),
+        release: vi.fn(),
+      };
+      pool.connect.mockResolvedValueOnce(client);
+
+      await expect(orchestrator.processBatch(sampleContent())).rejects.toThrow('boom');
+
+      const statements = client.query.mock.calls.map((c: any[]) => c[0]);
+      expect(statements).toContain('BEGIN');
+      expect(statements).toContain('ROLLBACK');
+      expect(statements).not.toContain('COMMIT');
+      expect(client.release).toHaveBeenCalled();
     });
   });
 
