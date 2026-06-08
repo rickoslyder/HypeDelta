@@ -28,6 +28,7 @@
     "synthesize": "tsx src/cli.ts synthesize",
     "digest": "tsx src/cli.ts digest --generate",
     "status": "tsx src/cli.ts status",
+    "ab:filter": "tsx scripts/ab-filter.ts",
     "test": "vitest",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json"

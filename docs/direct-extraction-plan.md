@@ -39,14 +39,31 @@ FILTER_STRATEGY=direct GLM_API_KEY=... pnpm run process
 
 ## How to validate before making it the default (needs real APIs)
 
-This is the part that can't be done in CI/sandbox and gates promotion:
+This is the part that can't be done in CI/sandbox and gates promotion. An A/B
+harness is provided — `scripts/ab-filter.ts` — that runs **both** filter paths on
+the **same** items and reports agreement, drop-rate, latency and the
+disagreements to spot-check:
 
-1. Take a representative sample of real content (a few hundred items across
-   sources/authors).
-2. Run both strategies (`agent` vs `direct`) over the same sample.
-3. Compare: relevance score agreement, topic/authorCategory label agreement,
-   drop-rate, and spot-check disagreements by hand.
-4. Measure cost and wall-clock per 1k items.
+```bash
+# Against the bundled sample (data/ab-sample.json)
+CLAUDE_CODE_OAUTH_TOKEN=... GLM_API_KEY=... pnpm run ab:filter
+
+# Against your own exported content
+pnpm run ab:filter -- --fixture path/to/items.json
+
+# Against the database directly
+DATABASE_URL=... pnpm run ab:filter -- --db --days 7 --limit 200
+```
+
+It captures assessments index-aligned (before the relevance drop) so the two
+strategies compare fairly, and skips a side gracefully if its credentials are
+missing. Then:
+
+1. Run it over a representative sample (a few hundred items across sources/authors).
+2. Read the agreement metrics: relevance mean |Δ|, topic / authorCategory /
+   contentType agreement, and the per-strategy drop-rate.
+3. Hand-check the printed disagreements.
+4. Measure cost and wall-clock (the harness reports latency + a speedup ratio).
 5. Promote `direct` to default only if quality is comparable at materially lower
    cost/latency. Keep the flag for rollback.
 

@@ -1,0 +1,66 @@
+[
+  {
+    "source": "twitter:sama",
+    "sourceType": "twitter",
+    "author": "Sam Altman",
+    "content": "Reasoning models are going to get dramatically better over the next year. The jump from where we are now to reliable multi-step planning is closer than most people think.",
+    "publishedAt": "2026-05-01T12:00:00Z",
+    "url": "https://twitter.com/sama/status/1"
+  },
+  {
+    "source": "twitter:GaryMarcus",
+    "sourceType": "twitter",
+    "author": "Gary Marcus",
+    "content": "Another day, another benchmark that quietly drops as soon as you change the surface form of the question. These systems still don't reason; they pattern-match. Show me robustness, not cherry-picked demos.",
+    "publishedAt": "2026-05-02T09:30:00Z",
+    "url": "https://twitter.com/GaryMarcus/status/2"
+  },
+  {
+    "source": "substack:interconnects",
+    "sourceType": "substack",
+    "author": "Nathan Lambert",
+    "content": "A detailed look at how RLHF is being replaced by more scalable preference-learning pipelines, and why the data flywheel matters more than the algorithm. Includes notes on reward model overfitting.",
+    "publishedAt": "2026-05-03T15:00:00Z",
+    "url": "https://interconnects.ai/p/3"
+  },
+  {
+    "source": "twitter:random",
+    "sourceType": "twitter",
+    "author": "Some Account",
+    "content": "Just landed in SF for the week, who wants to grab coffee and talk shop? DMs open!",
+    "publishedAt": "2026-05-04T18:00:00Z",
+    "url": "https://twitter.com/random/status/4"
+  },
+  {
+    "source": "blog:deepmind",
+    "sourceType": "blog",
+    "author": "DeepMind",
+    "content": "We introduce a new approach to mechanistic interpretability that scales sparse autoencoders to frontier models, recovering interpretable features across layers and enabling targeted interventions.",
+    "publishedAt": "2026-05-05T10:00:00Z",
+    "url": "https://deepmind.google/blog/5"
+  },
+  {
+    "source": "lesswrong",
+    "sourceType": "lesswrong",
+    "author": "Alignment Researcher",
+    "content": "A careful argument that current evals systematically overstate agentic capability because they leak affordances the model wouldn't have in deployment. Proposes a harder, deployment-faithful protocol.",
+    "publishedAt": "2026-05-06T08:00:00Z",
+    "url": "https://lesswrong.com/posts/6"
+  },
+  {
+    "source": "twitter:promo",
+    "sourceType": "twitter",
+    "author": "AI Startup",
+    "content": "🚀 Big news! Our new AI tool is 10x faster. Sign up now and get 50% off your first month. Link in bio. #AI #productivity #startup",
+    "publishedAt": "2026-05-07T11:00:00Z",
+    "url": "https://twitter.com/promo/status/7"
+  },
+  {
+    "source": "twitter:janeleike",
+    "sourceType": "twitter",
+    "author": "Lab Researcher",
+    "content": "Spent the week on scaling laws for tool-use agents. Early signal: capability scales smoothly with trajectory data, but reliability has a sharp threshold. More to share once we've replicated.",
+    "publishedAt": "2026-05-08T14:00:00Z",
+    "url": "https://twitter.com/janeleike/status/8"
+  }
+]
