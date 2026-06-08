@@ -6,14 +6,19 @@ FROM node:20-slim AS builder
 
 WORKDIR /app
 
-# Install dependencies
-COPY package*.json ./
-RUN npm ci
+# Enable pnpm via corepack (version pinned by package.json "packageManager")
+RUN corepack enable
+
+# Install dependencies for the worker package only. Workspace manifests are
+# required so pnpm can resolve the frozen lockfile.
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY apps/web/package.json ./apps/web/package.json
+RUN pnpm install --frozen-lockfile --filter ai-intel-extraction
 
 # Copy source and build
 COPY tsconfig.json ./
 COPY src/ ./src/
-RUN npm run build
+RUN pnpm run build
 
 # Stage 2: Production
 FROM node:20-slim
@@ -37,7 +42,7 @@ RUN curl -fsSL https://claude.ai/install.sh | bash || true
 # Copy built artifacts
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
-COPY package*.json ./
+COPY package.json ./
 
 # Create directories for skills and agents
 RUN mkdir -p .claude/skills .claude/agents data

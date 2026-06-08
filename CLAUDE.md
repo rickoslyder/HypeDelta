@@ -10,23 +10,23 @@ AI research intelligence aggregation and synthesis system. Monitors AI lab resea
 
 ### Development
 ```bash
-npm run build          # Compile TypeScript to dist/
-npm run typecheck      # Type check without emitting
-npm run lint           # ESLint on src/
-npm run test           # Run vitest tests
-npx vitest <file>      # Run single test file
-npm run dev            # Watch mode for CLI development
+pnpm run build          # Compile TypeScript to dist/
+pnpm run typecheck      # Type check without emitting
+pnpm run lint           # ESLint on src/
+pnpm run test           # Run vitest tests
+pnpm exec vitest <file> # Run single test file
+pnpm run dev            # Watch mode for CLI development
 ```
 
 ### Operations
 ```bash
-npm run init-db        # Initialize PostgreSQL schema
-npm run seed           # Seed source data
-npm run fetch          # Fetch due sources (--source twitter, --all, --due)
-npm run process        # Run extraction pipeline (-d days, -l limit)
-npm run synthesize     # Generate synthesis (-d lookback, -t topics, --no-digest)
-npm run digest         # Generate weekly digest
-npm run status         # System status overview
+pnpm run init-db        # Initialize PostgreSQL schema
+pnpm run seed           # Seed source data
+pnpm run fetch          # Fetch due sources (--source twitter, --all, --due)
+pnpm run process        # Run extraction pipeline (-d days, -l limit)
+pnpm run synthesize     # Generate synthesis (-d lookback, -t topics, --no-digest)
+pnpm run digest         # Generate weekly digest
+pnpm run status         # System status overview
 ```
 
 ### CLI Direct
@@ -99,7 +99,7 @@ Uses [TwitterAPI.io](https://twitterapi.io) for Twitter data (Nitter is dead as 
 
 Tables: `sources`, `content`, `extracted_claims` (with embeddings), `synthesis_results`, `predictions`
 
-Init: `docker-compose up -d postgres && npm run init-db && npm run seed`
+Init: `docker-compose up -d postgres && pnpm run init-db && pnpm run seed`
 
 ## Agent SDK Usage
 
