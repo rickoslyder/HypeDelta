@@ -106,7 +106,7 @@ class OllamaEmbeddings implements EmbeddingProvider {
   
   constructor(config: EmbeddingServiceConfig) {
     // Use OLLAMA_URL env var for Docker, fallback to localhost for local dev
-    this.baseUrl = config.baseUrl || process.env.OLLAMA_URL || 'http://localhost:11434';
+    this.baseUrl = config.baseUrl || process.env.OLLAMA_URL || process.env.OLLAMA_HOST || 'http://localhost:11434';
     this.model = config.model || 'nomic-embed-text';
     this.dimension = 768; // nomic-embed-text
     
