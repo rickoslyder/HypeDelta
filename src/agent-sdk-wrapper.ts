@@ -582,7 +582,9 @@ export interface QueryResult {
 // ============================================================================
 
 export const ZAI_CONFIG = {
-  // Support both GLM_* (docker-compose) and ZAI_* (legacy) naming conventions
+  // Support both GLM_* (docker-compose) and ZAI_* (legacy) naming conventions.
+  // Falls back to ANTHROPIC_API_KEY because Z.ai exposes an Anthropic-compatible
+  // endpoint — under that Claude Code setup the Z.ai key lives in ANTHROPIC_API_KEY.
   baseUrl: process.env.GLM_BASE_URL || process.env.ZAI_BASE_URL || 'https://api.z.ai/v1',
   apiKey: process.env.GLM_API_KEY || process.env.ZAI_API_KEY || process.env.ANTHROPIC_API_KEY || ''
 };

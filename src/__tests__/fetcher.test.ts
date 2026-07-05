@@ -59,7 +59,6 @@ describe('AIIntelFetcher', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetcher = new AIIntelFetcher({
-      projectDir: '/test',
       dbUrl: 'postgresql://localhost/test',
     });
   });

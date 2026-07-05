@@ -383,13 +383,19 @@ export class AIIntelOrchestrator {
   // ============================================================================
   
   private async enrichStage(claims: ExtractedClaim[]): Promise<ExtractedClaim[]> {
-    for (const claim of claims) {
-      try {
-        const embedding = await this.embeddings.embed(claim.claimText);
-        (claim as any).embedding = embedding;
-      } catch (e) {
-        console.warn(`Failed to embed claim: ${e}`);
-      }
+    // Embed in bounded-concurrency chunks rather than one-at-a-time. Per-claim
+    // failures are tolerated (the claim is simply stored without an embedding).
+    const CONCURRENCY = 5;
+    for (let i = 0; i < claims.length; i += CONCURRENCY) {
+      const batch = claims.slice(i, i + CONCURRENCY);
+      await Promise.all(batch.map(async (claim) => {
+        try {
+          const embedding = await this.embeddings.embed(claim.claimText);
+          (claim as any).embedding = embedding;
+        } catch (e) {
+          console.warn(`Failed to embed claim: ${e}`);
+        }
+      }));
     }
     return claims;
   }
@@ -402,90 +408,112 @@ export class AIIntelOrchestrator {
     filtered: FilteredContent[],
     claims: ExtractedClaim[]
   ): Promise<void> {
-    // Build a map of content external IDs to database IDs
-    const contentIdMap = new Map<string, number>();
-    const processedIds: number[] = [];
+    // Content and claims are written together in a single transaction so a
+    // mid-batch failure can't leave content marked processed without its claims
+    // (or orphaned claims without content).
+    const client = await this.contentStore.connect();
+    try {
+      await client.query('BEGIN');
 
-    // First, store all content and collect their database IDs
-    for (const item of filtered) {
-      const anyItem = item as any;
+      // Maps from content external IDs and URLs to database IDs. The URL map
+      // lets us resolve direct-extracted claims (USE_SKILLS=false), which carry
+      // a sourceUrl rather than a numeric contentId.
+      const contentIdMap = new Map<string, number>();
+      const urlToContentId = new Map<string, number>();
+      const processedIds: number[] = [];
 
-      // If content already has a database ID, use it directly (from getRecent/getUnprocessed)
-      if (anyItem.id && typeof anyItem.id === 'number') {
-        const externalId = anyItem.external_id || `${item.source}_${item.publishedAt.getTime()}`;
-        contentIdMap.set(externalId, anyItem.id);
-        processedIds.push(anyItem.id);
-        continue;
+      // First, store all content and collect their database IDs
+      for (const item of filtered) {
+        const anyItem = item as any;
+
+        // If content already has a database ID, use it directly (from getRecent/getUnprocessed)
+        if (anyItem.id && typeof anyItem.id === 'number') {
+          const externalId = anyItem.external_id || `${item.source}_${item.publishedAt.getTime()}`;
+          contentIdMap.set(externalId, anyItem.id);
+          if (item.url) urlToContentId.set(item.url, anyItem.id);
+          processedIds.push(anyItem.id);
+          continue;
+        }
+
+        // Handle both snake_case (from DB) and camelCase (from fetcher) sourceId
+        const sourceId = anyItem.sourceId || anyItem.source_id || 0;
+        if (sourceId === 0) {
+          console.warn(`Skipping content with no sourceId: ${item.url || item.title}`);
+          continue;
+        }
+
+        const externalId = item.id || `${item.source}_${item.publishedAt.getTime()}`;
+        const contentId = await this.contentStore.upsert({
+          sourceId,
+          externalId,
+          url: item.url,
+          title: item.title,
+          contentText: item.content,
+          contentType: item.sourceType,
+          author: item.author,
+          publishedAt: item.publishedAt,
+          metadata: item.metadata,
+        }, client);
+        contentIdMap.set(externalId, contentId);
+        if (item.url) urlToContentId.set(item.url, contentId);
+        processedIds.push(contentId);
       }
 
-      // Handle both snake_case (from DB) and camelCase (from fetcher) sourceId
-      const sourceId = anyItem.sourceId || anyItem.source_id || 0;
-      if (sourceId === 0) {
-        console.warn(`Skipping content with no sourceId: ${item.url || item.title}`);
-        continue;
+      // Mark all processed content
+      if (processedIds.length > 0) {
+        await this.contentStore.markProcessed(processedIds, client);
       }
 
-      const externalId = item.id || `${item.source}_${item.publishedAt.getTime()}`;
-      const contentId = await this.contentStore.upsert({
-        sourceId,
-        externalId,
-        url: item.url,
-        title: item.title,
-        contentText: item.content,
-        contentType: item.sourceType,
-        author: item.author,
-        publishedAt: item.publishedAt,
-        metadata: item.metadata,
-      });
-      contentIdMap.set(externalId, contentId);
-      processedIds.push(contentId);
-    }
+      // The set of content IDs actually stored in this batch. A claim may only
+      // be attributed to one of these.
+      const validContentIds = new Set(contentIdMap.values());
 
-    // Mark all processed content
-    if (processedIds.length > 0) {
-      await this.contentStore.markProcessed(processedIds);
-    }
+      // Now store claims with proper contentId references
+      for (const claim of claims) {
+        // Resolve the claim's content reference: prefer the explicit contentId
+        // returned by extraction, then fall back to a sourceUrl lookup (by URL,
+        // or by external id for callers that pass one as sourceUrl).
+        const contentId =
+          (typeof claim.contentId === 'number' ? claim.contentId : undefined) ??
+          (claim.sourceUrl
+            ? (urlToContentId.get(claim.sourceUrl) ?? contentIdMap.get(claim.sourceUrl))
+            : undefined);
 
-    // Build a list of all content IDs for claim assignment
-    const allContentIds = Array.from(contentIdMap.values());
+        // Only accept a reference we actually stored. Never guess an attribution:
+        // for a provenance-driven system, a claim linked to the wrong source is
+        // far worse than a dropped claim.
+        if (!contentId || !validContentIds.has(contentId)) {
+          console.warn(`Dropping claim with unresolved content reference: "${claim.claimText?.slice(0, 50)}..."`);
+          continue;
+        }
 
-    // Now store claims with proper contentId references
-    for (let i = 0; i < claims.length; i++) {
-      const claim = claims[i];
-      // Try to find contentId: from claim, from sourceUrl lookup, by index, or skip
-      let contentId = claim.contentId ||
-        (claim.sourceUrl ? contentIdMap.get(claim.sourceUrl) : undefined);
-
-      // If no direct mapping, assign to content by modulo index (claims spread across content)
-      if (!contentId && allContentIds.length > 0) {
-        contentId = allContentIds[i % allContentIds.length];
+        await this.claimStore.upsert({
+          contentId,
+          claimText: claim.claimText,
+          claimType: claim.claimType,
+          topic: claim.topic,
+          stance: claim.stance,
+          bullishness: claim.bullishness,
+          confidence: claim.confidence,
+          timeframe: claim.timeframe,
+          targetEntity: claim.targetEntity,
+          evidenceProvided: claim.evidenceProvided,
+          quoteworthiness: claim.quoteworthiness,
+          relatedTo: claim.relatedTo,
+          originalQuote: claim.originalQuote,
+          author: claim.author,
+          authorCategory: claim.authorCategory,
+          sourceUrl: claim.sourceUrl,
+          extractedAt: claim.extractedAt,
+        } as EnrichedClaim, client);
       }
 
-      // Skip claims with no valid content reference
-      if (!contentId || contentId === 0) {
-        console.warn(`Skipping claim with no content reference: "${claim.claimText?.slice(0, 50)}..."`);
-        continue;
-      }
-
-      await this.claimStore.upsert({
-        contentId,
-        claimText: claim.claimText,
-        claimType: claim.claimType,
-        topic: claim.topic,
-        stance: claim.stance,
-        bullishness: claim.bullishness,
-        confidence: claim.confidence,
-        timeframe: claim.timeframe,
-        targetEntity: claim.targetEntity,
-        evidenceProvided: claim.evidenceProvided,
-        quoteworthiness: claim.quoteworthiness,
-        relatedTo: claim.relatedTo,
-        originalQuote: claim.originalQuote,
-        author: claim.author,
-        authorCategory: claim.authorCategory,
-        sourceUrl: claim.sourceUrl,
-        extractedAt: claim.extractedAt,
-      } as EnrichedClaim);
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
     }
   }
   

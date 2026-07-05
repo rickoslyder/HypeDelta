@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runFetch, runProcess, runSynthesize, getRunningOperations } from "@/lib/cli-runner";
+import { isAuthenticatedRequest } from "@/lib/auth";
 
 export async function POST(request: NextRequest) {
   try {
+    if (!(await isAuthenticatedRequest(request))) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     // Check if any pipeline operation is already running
     const running = getRunningOperations();
     if (running.length > 0) {

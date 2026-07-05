@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runProcess, isOperationRunning } from "@/lib/cli-runner";
+import { isAuthenticatedRequest } from "@/lib/auth";
 
 export async function POST(request: NextRequest) {
   try {
+    if (!(await isAuthenticatedRequest(request))) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     // Check if process is already running
     if (isOperationRunning("process")) {
       return NextResponse.json(

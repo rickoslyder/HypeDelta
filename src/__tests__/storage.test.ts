@@ -62,10 +62,10 @@ describe('ContentStore', () => {
 
       const results = await store.getRecent(7);
       expect(results).toHaveLength(2);
-      // The implementation embeds days directly in SQL, not as parameters
+      // Days are passed as a bound parameter (parameterized interval), not interpolated
       expect(mockQuery).toHaveBeenCalledWith(
-        expect.stringContaining('7 days'),
-        []
+        expect.stringContaining('make_interval'),
+        [7]
       );
     });
   });
@@ -112,10 +112,10 @@ describe('ClaimStore', () => {
 
       const results = await store.getByTopic('reasoning', 30);
       expect(results).toHaveLength(2);
-      // Days embedded in SQL, only topic as parameter
+      // Topic and days are both bound parameters
       expect(mockQuery).toHaveBeenCalledWith(
         expect.stringContaining('topic'),
-        ['reasoning']
+        ['reasoning', 30]
       );
     });
   });

@@ -171,7 +171,7 @@ const synthesis = await client.invokeSubagent('synthesizer', 'Synthesize views o
 
 ```bash
 cd ai-intel-extraction
-npm install
+pnpm install
 ```
 
 ### 2. Set Environment Variables
@@ -195,26 +195,26 @@ export VOYAGE_API_KEY="..."     # If using Voyage embeddings
 docker-compose up -d postgres
 
 # Initialize schema
-npm run init-db
+pnpm run init-db
 
 # Seed sources (Twitter handles, Substacks, blogs, etc.)
-npm run seed
+pnpm run seed
 ```
 
 ### 4. Run the Pipeline
 
 ```bash
 # Fetch content from all sources due for update
-npm run fetch
+pnpm run fetch
 
 # Process fetched content (filter + extract)
-npm run process
+pnpm run process
 
 # Run synthesis and generate digest
-npm run synthesize
+pnpm run synthesize
 
 # Or generate just the digest
-npm run digest
+pnpm run digest
 ```
 
 ## CLI Commands
@@ -261,16 +261,16 @@ ai-intel digest --generate -o weekly.md  # Generate and save
 # /etc/cron.d/ai-intel
 
 # Fetch Twitter every 4 hours
-0 */4 * * * aiuser cd /opt/ai-intel && npm run fetch -- --source twitter
+0 */4 * * * aiuser cd /opt/ai-intel && pnpm run fetch -- --source twitter
 
 # Fetch other sources twice daily
-0 8,20 * * * aiuser cd /opt/ai-intel && npm run fetch -- --due
+0 8,20 * * * aiuser cd /opt/ai-intel && pnpm run fetch -- --due
 
 # Process content hourly
-0 * * * * aiuser cd /opt/ai-intel && npm run process -- -d 1
+0 * * * * aiuser cd /opt/ai-intel && pnpm run process -- -d 1
 
 # Generate weekly digest every Sunday at 9am
-0 9 * * 0 aiuser cd /opt/ai-intel && npm run digest -- -o /var/www/digests/$(date +\%Y-\%W).md
+0 9 * * 0 aiuser cd /opt/ai-intel && pnpm run digest -- -o /var/www/digests/$(date +\%Y-\%W).md
 ```
 
 ## Docker Compose
