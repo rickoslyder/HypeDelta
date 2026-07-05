@@ -1,40 +1,36 @@
-# Environment
-.env
-.env.local
-.env.*.local
-
-# Dependencies
-node_modules/
 
 # Build output
-dist/
-build/
-*.tsbuildinfo
-
-# Next.js
-apps/web/.next/
-apps/web/out/
-
+# Dependencies
+# Docker volume mounts
+# Environment
 # IDE
+# Logs
+# Next.js
+# OS
+# Temp files
+# Test coverage
+*.log
+*.png
+*.swo
+*.swp
+*.temp
+*.tmp
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*.local
+.env.local
 .idea/
 .vscode/
-*.swp
-*.swo
-
-# OS
-.DS_Store
 Thumbs.db
-
-# Logs
-*.log
-npm-debug.log*
-
-# Test coverage
+apps/web/.next/
+apps/web/out/
+build/
+code-server*.png
 coverage/
-
-# Temp files
-*.tmp
-*.temp
-
-# Docker volume mounts
+digest-*.md
+digest_output.md
+dist/
 mnt/
+node_modules/
+npm-debug.log*

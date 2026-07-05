@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 /**
  * AI Intelligence Extraction & Synthesis Layer
  * 
@@ -331,7 +332,7 @@ export class AIIntelOrchestrator {
   
   private extractDirect(content: FilteredContent[]): ExtractedClaim[] {
     return content.map(item => ({
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       contentId: undefined,  // Will be set during storage
       claimText: item.content?.slice(0, 500) || '',
       claimType: 'opinion' as const,
@@ -355,7 +356,7 @@ export class AIIntelOrchestrator {
 
     for (const claim of claimsArray) {
       claims.push({
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         contentId: claim.contentId,  // Will be set during storage if undefined
         claimText: claim.claimText || claim.text || '',
         claimType: claim.claimType || 'opinion',

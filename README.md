@@ -2,6 +2,14 @@
 
 A comprehensive system for aggregating, extracting, and synthesizing AI research intelligence from researchers, critics, and thought leaders across the AI ecosystem.
 
+
+## Deploy (Dockerhost)
+
+- **Web image:** `docker build -f apps/web/Dockerfile -t hypedelta-web:latest .` (Node 20 + pnpm 9; CMD `node apps/web/server.js`)
+- **Prod compose:** `/srv/dockerdata/hypedelta` — Traefik labels only (disable `traefik/dynamic/hypedelta.yml` file provider to avoid duplicate routers)
+- **DB:** `ai-intel-postgres` on `ai-intel-network`; web uses `DATABASE_URL=...@ai-intel-postgres:5432/ai_intel`. Postgres host publish: `127.0.0.1:5432` only.
+- **Not connected** to Aegis geopolitical Intel briefings (separate product).
+
 ## Architecture
 
 ```
