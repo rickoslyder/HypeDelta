@@ -505,6 +505,12 @@ export class AIIntelOrchestrator {
           authorCategory: claim.authorCategory,
           sourceUrl: claim.sourceUrl,
           extractedAt: claim.extractedAt,
+          // enrichStage attaches this via `(claim as any).embedding`, and ClaimStore.upsert
+          // only calls storeEmbedding when it is present. It was missing from this literal, so
+          // every embedding was computed and then silently dropped: 86 claims extracted on
+          // 2026-08-01 produced 0 rows in content_embeddings. The `as EnrichedClaim` cast below
+          // is what stopped the compiler from catching it.
+          embedding: (claim as any).embedding,
         } as EnrichedClaim, client);
       }
 
