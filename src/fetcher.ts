@@ -28,6 +28,16 @@ const TWITTER_API_CONFIG = {
 // Track last Twitter API call for rate limiting
 let lastTwitterApiCall = 0;
 
+// Batched advanced_search settings. Set TWITTER_BATCHED_FETCH=false to fall back to the
+// original per-handle last_tweets path without rebuilding the image.
+const TWITTER_BATCH_CONFIG = {
+  enabled: (process.env.TWITTER_BATCHED_FETCH ?? 'true').toLowerCase() !== 'false',
+  handlesPerQuery: Number(process.env.TWITTER_HANDLES_PER_QUERY ?? 10),
+  defaultWindowHours: Number(process.env.TWITTER_DEFAULT_WINDOW_HOURS ?? 6),
+  maxLookbackHours: Number(process.env.TWITTER_MAX_LOOKBACK_HOURS ?? 48),
+  maxPagesPerBatch: Number(process.env.TWITTER_MAX_PAGES_PER_BATCH ?? 5),
+};
+
 // Legacy Nitter instances (fallback, mostly non-functional as of 2025)
 const NITTER_INSTANCES = [
   'nitter.poast.org',
@@ -66,6 +76,18 @@ export class AIIntelFetcher {
     const successful: { source: string; count: number }[] = [];
     const failed: { source: string; error: string }[] = [];
 
+    // Twitter is fetched up front in ORed, time-windowed batches rather than one
+    // last_tweets call per handle -- see fetchTwitterBatched for why (that path re-bought the
+    // same ~20 tweets per handle every cycle at 15 credits each). Everything else keeps the
+    // original per-source path.
+    let twitterBatched: Map<string, RawContent[]> | null = null;
+    if (TWITTER_BATCH_CONFIG.enabled) {
+      const twitterSources = sources.filter(s => (s.type as SourceType) === 'twitter');
+      if (twitterSources.length > 0) {
+        twitterBatched = await this.fetchTwitterBatched(twitterSources);
+      }
+    }
+
     // Group by source type so same-provider fetches stay sequential (respecting
     // each provider's rate limits), while different providers run concurrently.
     const byType = new Map<string, Source[]>();
@@ -78,7 +100,11 @@ export class AIIntelFetcher {
     await Promise.all(Array.from(byType.values()).map(async (group) => {
       for (const source of group) {
         try {
-          const content = await this.fetchSource(source);
+          // Batched results are already in hand for twitter; do not re-fetch (that would
+          // re-incur the very cost this exists to avoid).
+          const content = (twitterBatched && (source.type as SourceType) === 'twitter')
+            ? (twitterBatched.get(source.identifier) ?? [])
+            : await this.fetchSource(source);
 
           // Store content
           for (const item of content) {
@@ -100,8 +126,11 @@ export class AIIntelFetcher {
 
           successful.push({ source: source.identifier, count: content.length });
 
-          // Rate limit between same-provider sources
-          await this.sleep(1000);
+          // Rate limit between same-provider sources. Skipped for twitter when the batch
+          // already ran -- there is no per-source request left to pace.
+          if (!(twitterBatched && (source.type as SourceType) === 'twitter')) {
+            await this.sleep(1000);
+          }
 
         } catch (error) {
           failed.push({
@@ -115,6 +144,143 @@ export class AIIntelFetcher {
     return { successful, failed };
   }
   
+  /**
+   * Batched, time-windowed Twitter fetch.
+   *
+   * WHY THIS EXISTS (2026-08-01). The per-source path calls /twitter/user/last_tweets, which
+   * always returns the newest ~20 tweets for one handle and has NO time or since_id filter --
+   * TwitterAPI.io's own docs say "if you only need to fetch the latest tweets from a single
+   * user very frequently, do not use this API, it will cost you a lot". Billing is 15 credits
+   * per tweet RETURNED, so a 4-hourly cycle over 76 handles bought ~1,086 tweets (16,290
+   * credits) six times a day -- ~97,700/day -- to surface about 28 genuinely new items. The
+   * rest were the same tweets, re-bought every cycle.
+   *
+   * /twitter/tweet/advanced_search accepts unix-precision since_time/until_time and ORed
+   * from: operators, and bills only the tweets it actually returns (measured: 225 credits for
+   * 15 tweets across 8 handles = exactly 15/tweet, with no per-call surcharge). So one query
+   * per batch over the window since each source was last fetched costs only what is new.
+   *
+   * Correctness notes:
+   *  - The window start is the OLDEST last_fetched in the batch, so a source that lagged
+   *    behind cannot have its tweets skipped by a batch-mate that is up to date.
+   *  - It is clamped to MAX_LOOKBACK_HOURS so a long outage cannot trigger an unbounded
+   *    (and expensive) backfill.
+   *  - Storage upsert is keyed on external id, so an overlapping window re-stores nothing.
+   *  - Any batch that errors falls back to the original per-handle path, so this degrades
+   *    to the old behaviour rather than losing sources.
+   */
+  private async fetchTwitterBatched(
+    sources: Source[]
+  ): Promise<Map<string, RawContent[]>> {
+    const out = new Map<string, RawContent[]>();
+    for (const s of sources) out.set(s.identifier, []);
+    if (!TWITTER_API_CONFIG.apiKey) return out;
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const maxLookbackSec = TWITTER_BATCH_CONFIG.maxLookbackHours * 3600;
+    const byHandle = new Map<string, Source>();
+    for (const s of sources) byHandle.set(s.identifier.toLowerCase(), s);
+
+    // Chunk handles so each ORed query stays within a conservative length budget.
+    const batches: Source[][] = [];
+    for (let i = 0; i < sources.length; i += TWITTER_BATCH_CONFIG.handlesPerQuery) {
+      batches.push(sources.slice(i, i + TWITTER_BATCH_CONFIG.handlesPerQuery));
+    }
+
+    for (const batch of batches) {
+      // Oldest watermark in the batch -- never skip a lagging source.
+      let sinceSec = nowSec - TWITTER_BATCH_CONFIG.defaultWindowHours * 3600;
+      for (const s of batch) {
+        if (s.lastFetched) {
+          const t = Math.floor(new Date(s.lastFetched).getTime() / 1000);
+          if (t < sinceSec) sinceSec = t;
+        } else {
+          sinceSec = nowSec - TWITTER_BATCH_CONFIG.defaultWindowHours * 3600;
+          break;
+        }
+      }
+      if (nowSec - sinceSec > maxLookbackSec) sinceSec = nowSec - maxLookbackSec;
+
+      const froms = batch.map(s => `from:${s.identifier}`).join(' OR ');
+      const query = `(${froms}) since_time:${sinceSec} until_time:${nowSec}`;
+
+      try {
+        let cursor = '';
+        let pages = 0;
+        while (pages < TWITTER_BATCH_CONFIG.maxPagesPerBatch) {
+          const since = Date.now() - lastTwitterApiCall;
+          if (since < TWITTER_API_CONFIG.rateLimitMs) {
+            await this.sleep(TWITTER_API_CONFIG.rateLimitMs - since);
+          }
+          lastTwitterApiCall = Date.now();
+
+          const url = `${TWITTER_API_CONFIG.baseUrl}/twitter/tweet/advanced_search`
+            + `?query=${encodeURIComponent(query)}&queryType=Latest`
+            + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '');
+          const response = await fetch(url, {
+            headers: { 'X-API-Key': TWITTER_API_CONFIG.apiKey },
+          });
+          if (!response.ok) {
+            throw new Error(`advanced_search returned ${response.status}: ${await response.text()}`);
+          }
+
+          const data = await response.json() as {
+            tweets?: Array<{
+              id: string; text: string; url?: string; createdAt: string;
+              likeCount?: number; retweetCount?: number; replyCount?: number; viewCount?: number;
+              author?: { userName?: string; name?: string };
+              isReply?: boolean; quoted_tweet?: object; retweeted_tweet?: object;
+            }>;
+            has_next_page?: boolean;
+            next_cursor?: string | null;
+          };
+
+          for (const tweet of data.tweets ?? []) {
+            if (tweet.isReply) continue; // same signal filter as the per-handle path
+            const uname = (tweet.author?.userName || '').toLowerCase();
+            const src = byHandle.get(uname);
+            if (!src) continue; // defensive: search can return adjacent accounts
+            out.get(src.identifier)!.push({
+              id: tweet.id,
+              source: `twitter:${src.identifier}`,
+              sourceType: 'twitter' as SourceType,
+              author: src.authorName || tweet.author?.name || src.identifier,
+              content: tweet.text,
+              url: tweet.url || `https://twitter.com/${src.identifier}/status/${tweet.id}`,
+              publishedAt: new Date(tweet.createdAt),
+              metadata: {
+                likeCount: tweet.likeCount,
+                retweetCount: tweet.retweetCount,
+                replyCount: tweet.replyCount,
+                viewCount: tweet.viewCount,
+                isRetweet: !!tweet.retweeted_tweet,
+                isQuote: !!tweet.quoted_tweet,
+                provider: 'twitterapi.io',
+                fetchMode: 'advanced_search_batched'
+              }
+            });
+          }
+
+          pages++;
+          if (!data.has_next_page || !data.next_cursor) break;
+          cursor = data.next_cursor;
+        }
+      } catch (e) {
+        // Degrade to the original per-handle path for this batch only.
+        console.warn(`Batched Twitter fetch failed (${batch.length} handles): ${e}; falling back per-handle`);
+        for (const s of batch) {
+          try {
+            out.set(s.identifier, await this.fetchTwitter(s.identifier, s.authorName));
+          } catch (inner) {
+            console.warn(`Per-handle fallback failed for ${s.identifier}: ${inner}`);
+          }
+        }
+      }
+    }
+
+    return out;
+  }
+
   /**
    * Fetch from a single source
    */
