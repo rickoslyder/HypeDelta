@@ -41,6 +41,8 @@ export interface Content {
   contentHtml?: string;
   contentType?: string;
   author?: string;
+  /** Joined sources.identifier when selected via getRecent/getUnprocessed. */
+  sourceIdentifier?: string;
   publishedAt?: Date;
   fetchedAt?: Date;
   processedAt?: Date;  // Track when content was processed
@@ -138,6 +140,11 @@ class BaseStore {
   async connect(): Promise<DbClient> {
     return this.pool.connect();
   }
+
+  /** Close the underlying pool. Safe to call once when a store is done. */
+  async close(): Promise<void> {
+    await this.pool.end();
+  }
 }
 
 // ============================================================================
@@ -186,7 +193,8 @@ export class ContentStore extends BaseStore {
     const params: any[] = [safeDays];
 
     let sql = `
-      SELECT c.*, s.type as source_type, s.author_name, s.category
+      SELECT c.*, s.type as source_type, s.author_name, s.category,
+             s.identifier as source_identifier
       FROM content c
       JOIN sources s ON c.source_id = s.id
       WHERE c.published_at > NOW() - make_interval(days => $1)
@@ -212,16 +220,23 @@ export class ContentStore extends BaseStore {
   }
 
   async getUnprocessed(days: number, limit = 100): Promise<Content[]> {
+    const MAX_UNPROCESSED_LIMIT = 500;
     const safeDays = Math.max(0, Math.floor(Number(days) || 0));
+    // Defense-in-depth: clamp independently of scheduler env validation.
+    const safeLimit = Math.min(
+      MAX_UNPROCESSED_LIMIT,
+      Math.max(1, Math.floor(Number(limit) || 100))
+    );
     return this.query<Content>(`
-      SELECT c.*, s.type as source_type, s.author_name, s.category
+      SELECT c.*, s.type as source_type, s.author_name, s.category,
+             s.identifier as source_identifier
       FROM content c
       JOIN sources s ON c.source_id = s.id
       WHERE c.published_at > NOW() - make_interval(days => $1)
         AND c.processed_at IS NULL
-      ORDER BY c.published_at DESC
+      ORDER BY c.published_at ASC, c.id ASC
       LIMIT $2
-    `, [safeDays, limit]);
+    `, [safeDays, safeLimit]);
   }
 
   async markProcessed(ids: number[], client?: DbClient): Promise<void> {

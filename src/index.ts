@@ -139,7 +139,8 @@ export class AIIntelOrchestrator {
   async processBatch(rawContent: RawContent[]): Promise<ProcessingResult> {
     console.log(`Processing batch of ${rawContent.length} items`);
 
-    // Mark ALL input content as processed (even if filtered out)
+    // Collect ALL input content database IDs so filtered-out/noise items are
+    // marked processed in the same transaction as claim writes (retry-safe).
     const allContentIds = rawContent
       .map((item: any) => item.id)
       .filter((id: any) => typeof id === 'number' && id > 0);
@@ -152,12 +153,7 @@ export class AIIntelOrchestrator {
 
     const enriched = await this.enrichStage(claims);
 
-    await this.storeResults(filtered, enriched);
-
-    // Mark all input content as processed (not just filtered)
-    if (allContentIds.length > 0) {
-      await this.contentStore.markProcessed(allContentIds);
-    }
+    await this.storeResults(filtered, enriched, allContentIds);
 
     return {
       processed: rawContent.length,
@@ -406,7 +402,8 @@ export class AIIntelOrchestrator {
   
   private async storeResults(
     filtered: FilteredContent[],
-    claims: ExtractedClaim[]
+    claims: ExtractedClaim[],
+    allInputContentIds: number[] = []
   ): Promise<void> {
     // Content and claims are written together in a single transaction so a
     // mid-batch failure can't leave content marked processed without its claims
@@ -420,7 +417,39 @@ export class AIIntelOrchestrator {
       // a sourceUrl rather than a numeric contentId.
       const contentIdMap = new Map<string, number>();
       const urlToContentId = new Map<string, number>();
-      const processedIds: number[] = [];
+      const processedIdSet = new Set<number>(allInputContentIds);
+      // Authoritative provenance for each content id resolved in this txn.
+      // Claims may only inherit URL/author from entries here — never invent.
+      const contentProvenance = new Map<number, {
+        url?: string | null;
+        sourceIdentifier?: string | null;
+        authorName?: string | null;
+        author?: string | null;
+      }>();
+
+      const nonBlank = (v: unknown): string | undefined => {
+        if (v == null) return undefined;
+        const s = String(v).trim();
+        return s === '' ? undefined : s;
+      };
+
+      const recordProvenance = (contentId: number, item: any) => {
+        const url = nonBlank(item.url) ?? nonBlank(item.source_url);
+        const sourceIdentifier =
+          nonBlank(item.source_identifier) ??
+          nonBlank(item.sourceIdentifier) ??
+          nonBlank(item.identifier);
+        const authorName =
+          nonBlank(item.author_name) ?? nonBlank(item.authorName);
+        const author = nonBlank(item.author);
+        contentProvenance.set(contentId, {
+          url,
+          sourceIdentifier,
+          authorName,
+          author,
+        });
+        if (url) urlToContentId.set(url, contentId);
+      };
 
       // First, store all content and collect their database IDs
       for (const item of filtered) {
@@ -430,8 +459,8 @@ export class AIIntelOrchestrator {
         if (anyItem.id && typeof anyItem.id === 'number') {
           const externalId = anyItem.external_id || `${item.source}_${item.publishedAt.getTime()}`;
           contentIdMap.set(externalId, anyItem.id);
-          if (item.url) urlToContentId.set(item.url, anyItem.id);
-          processedIds.push(anyItem.id);
+          recordProvenance(anyItem.id, { ...anyItem, url: item.url ?? anyItem.url, author: item.author ?? anyItem.author });
+          processedIdSet.add(anyItem.id);
           continue;
         }
 
@@ -455,13 +484,16 @@ export class AIIntelOrchestrator {
           metadata: item.metadata,
         }, client);
         contentIdMap.set(externalId, contentId);
-        if (item.url) urlToContentId.set(item.url, contentId);
-        processedIds.push(contentId);
-      }
-
-      // Mark all processed content
-      if (processedIds.length > 0) {
-        await this.contentStore.markProcessed(processedIds, client);
+        recordProvenance(contentId, {
+          ...anyItem,
+          url: item.url,
+          author: item.author,
+          // Fresh inserts: source identity is the content author handle when
+          // the join row is not present; never synthesize a URL.
+          source_identifier: anyItem.source_identifier || anyItem.sourceIdentifier || anyItem.identifier || item.author,
+          author_name: anyItem.author_name || anyItem.authorName,
+        });
+        processedIdSet.add(contentId);
       }
 
       // The set of content IDs actually stored in this batch. A claim may only
@@ -487,6 +519,18 @@ export class AIIntelOrchestrator {
           continue;
         }
 
+        const prov = contentProvenance.get(contentId);
+        // Prefer extraction values when non-blank; otherwise inherit only from
+        // the resolved content record in this transaction.
+        const sourceUrl =
+          nonBlank(claim.sourceUrl) ??
+          nonBlank(prov?.url);
+        const author =
+          nonBlank(claim.author) ??
+          nonBlank(prov?.sourceIdentifier) ??
+          nonBlank(prov?.authorName) ??
+          nonBlank(prov?.author);
+
         await this.claimStore.upsert({
           contentId,
           claimText: claim.claimText,
@@ -501,11 +545,18 @@ export class AIIntelOrchestrator {
           quoteworthiness: claim.quoteworthiness,
           relatedTo: claim.relatedTo,
           originalQuote: claim.originalQuote,
-          author: claim.author,
+          author,
           authorCategory: claim.authorCategory,
-          sourceUrl: claim.sourceUrl,
+          sourceUrl,
           extractedAt: claim.extractedAt,
         } as EnrichedClaim, client);
+      }
+
+      // Mark ALL input content IDs (including filtered-out noise) only after
+      // claim writes succeed — still inside the same transaction.
+      const processedIds = [...processedIdSet];
+      if (processedIds.length > 0) {
+        await this.contentStore.markProcessed(processedIds, client);
       }
 
       await client.query('COMMIT');
