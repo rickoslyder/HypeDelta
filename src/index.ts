@@ -1,32 +1,36 @@
 import { randomUUID } from "node:crypto";
 /**
  * AI Intelligence Extraction & Synthesis Layer
- * 
- * Architecture:
- * - Claude Agent SDK: Skills-based extraction via .claude/skills/
- * - GLM 4.7 (via Z.ai): Bulk filtering when haiku model is used
- * - Subagents: Isolated task execution via .claude/agents/
- * 
+ *
  * Pipeline:
  * 1. INGEST: Raw content from fetchers → preprocessing
- * 2. FILTER: content-filter skill (routes to GLM via haiku)
- * 3. EXTRACT: claim-extraction skill (nuanced Claude analysis)
+ * 2. FILTER: StageModelRouter (deepseek-v4-flash)
+ * 3. EXTRACT: StageModelRouter (deepseek-v4-flash)
  * 4. ENRICH: Add embeddings, cross-references, topic tags
- * 5. SYNTHESIZE: topic-synthesis + hype-assessment skills
- * 6. OUTPUT: digest-generation skill produces weekly digest
+ * 5. SYNTHESIZE / HYPE: StageModelRouter (kimi-k3)
+ * 6. OUTPUT: digest via StageModelRouter (kimi-k3 markdown)
  */
 
-import { AIIntelAgent, GLMClient, ZAI_CONFIG } from './agent-sdk-wrapper';
 import { ContentStore, ClaimStore, SynthesisStore, type EnrichedClaim } from './storage';
 import { EmbeddingService } from './embeddings';
-import { FILTER_PROMPT } from './prompts';
+import { normalizeAuthorRole } from './author-side';
+import { normalizeExternalId } from './external-id';
+import { CANONICAL_TOPICS, normalizeTopic, topicPreservation, uniqueCanonicalTopics } from './topic-taxonomy';
 import type {
   RawContent,
   FilteredContent,
   ExtractedClaim,
-  HypeDelta,
-  TopicConsensus
 } from './types';
+import {
+  type TopicSynthesis,
+  normalizeDigestMarkdown,
+  toCanonicalTopicSynthesis,
+} from './topic-synthesis';
+import { ModelRoutingError } from './model-routing';
+import {
+  HypeAssessmentSchema,
+  type PipelineAgent,
+} from './pipeline-model-agent';
 
 // ============================================================================
 // CONFIGURATION
@@ -37,14 +41,20 @@ export interface OrchestratorConfig {
   dbUrl: string;
   embeddingProvider?: 'ollama' | 'openai' | 'voyage';
   useSkills?: boolean;
-  glmFallback?: boolean;
+  agent?: PipelineAgent;
+  modelAttemptStore?: { close: () => Promise<void> };
 }
 
 export interface ProcessingResult {
   processed: number;
   relevant: number;
+  /** Persisted claim count (compatibility alias of persistedClaims). */
   claimsExtracted: number;
   timestamp: Date;
+  agentOutputs: number;
+  admittedClaims: number;
+  rejectedClaims: number;
+  persistedClaims: number;
 }
 
 export interface SynthesisOptions {
@@ -57,33 +67,6 @@ export interface SynthesisResult {
   syntheses: TopicSynthesis[];
   hypeAssessment: HypeAssessment;
   digest: string | null;
-}
-
-interface TopicSynthesis {
-  topic: string;
-  claimCount: number; // For balanced digest coverage
-  labConsensus: string;
-  criticConsensus: string;
-  agreements: string[];
-  disagreements: Disagreement[];
-  emergingNarratives: string[];
-  predictions: Prediction[];
-  evidenceQuality: number;
-  hypeDelta: HypeDelta;
-  synthesisNarrative: string;
-}
-
-interface Disagreement {
-  point: string;
-  labPosition: string;
-  criticPosition: string;
-}
-
-interface Prediction {
-  text: string;
-  author: string;
-  confidence: number;
-  timeframe: string;
 }
 
 interface HypeAssessment {
@@ -106,23 +89,16 @@ interface TopicHypeScore {
 // ============================================================================
 
 export class AIIntelOrchestrator {
-  private agent: AIIntelAgent;
-  private glm: GLMClient | null = null;
+  private agent: PipelineAgent | null;
   public contentStore: ContentStore;
   public claimStore: ClaimStore;
   public synthesisStore: SynthesisStore;
   private embeddings: EmbeddingService;
   private useSkills: boolean;
-  private glmFallback: boolean;
+  private modelAttemptStore?: { close: () => Promise<void> };
   
   constructor(config: OrchestratorConfig) {
-    this.agent = new AIIntelAgent({
-      projectDir: config.projectDir
-    });
-    
-    if (config.glmFallback) {
-      this.glm = new GLMClient();
-    }
+    this.agent = config.agent ?? null;
     
     this.contentStore = new ContentStore(config.dbUrl);
     this.claimStore = new ClaimStore(config.dbUrl);
@@ -130,7 +106,20 @@ export class AIIntelOrchestrator {
     this.embeddings = new EmbeddingService(config.embeddingProvider || 'ollama');
     
     this.useSkills = config.useSkills !== false;
-    this.glmFallback = config.glmFallback || false;
+    this.modelAttemptStore = config.modelAttemptStore;
+  }
+
+  /**
+   * Release owned DB pools. CLI one-shots must call this; the long-lived
+   * scheduler must not, except on explicit shutdown.
+   */
+  async close(): Promise<void> {
+    await Promise.all([
+      this.contentStore.close(),
+      this.claimStore.close(),
+      this.synthesisStore.close(),
+      this.modelAttemptStore?.close(),
+    ]);
   }
   
   /**
@@ -148,18 +137,23 @@ export class AIIntelOrchestrator {
     const filtered = await this.filterStage(rawContent);
     console.log(`Filtered to ${filtered.length} relevant items`);
 
-    const claims = await this.extractStage(filtered);
+    const extracted = await this.extractStage(filtered);
+    const claims = extracted.claims;
     console.log(`Extracted ${claims.length} claims`);
 
     const enriched = await this.enrichStage(claims);
 
-    await this.storeResults(filtered, enriched, allContentIds);
+    const storedCount = await this.storeResults(filtered, enriched, allContentIds);
 
     return {
       processed: rawContent.length,
       relevant: filtered.length,
-      claimsExtracted: claims.length,
-      timestamp: new Date()
+      claimsExtracted: storedCount,
+      timestamp: new Date(),
+      agentOutputs: extracted.agentOutputs,
+      admittedClaims: extracted.admittedClaims,
+      rejectedClaims: extracted.agentOutputs - storedCount,
+      persistedClaims: storedCount,
     };
   }
   
@@ -175,11 +169,14 @@ export class AIIntelOrchestrator {
     
     const recentClaims = await this.claimStore.getRecent(lookbackDays);
     const byTopic = this.groupByTopic(recentClaims);
+    const requested = topics == null ? null : uniqueCanonicalTopics(topics);
     
     const syntheses: TopicSynthesis[] = [];
     
-    for (const [topic, claims] of Object.entries(byTopic)) {
-      if (topics && !topics.includes(topic)) continue;
+    for (const topic of CANONICAL_TOPICS) {
+      const claims = byTopic[topic] ?? [];
+      if (claims.length === 0) continue;
+      if (requested && !requested.includes(topic)) continue;
       const synthesis = await this.synthesizeTopic(topic, claims);
       syntheses.push(synthesis);
     }
@@ -188,7 +185,15 @@ export class AIIntelOrchestrator {
     
     let digest: string | null = null;
     if (generateDigest) {
+      if (!this.agent) {
+        throw new Error('Pipeline agent is required for digest');
+      }
       digest = await this.agent.generateDigest(syntheses, hypeAssessment);
+      const normalized = normalizeDigestMarkdown(digest);
+      if (normalized.unsupported) {
+        throw new Error('digest must be nonblank markdown');
+      }
+      digest = normalized.markdown;
     }
     
     await this.synthesisStore.save({
@@ -228,8 +233,8 @@ export class AIIntelOrchestrator {
       console.log(`  Pre-filtered ${skipped} noise items (RTs, short, link-only)`);
     }
 
-    if (this.useSkills) {
-      // Process in batches of 20 (Agent SDK prompt limit)
+    if (this.agent) {
+      // Process in batches of 20 (provider prompt limit)
       const BATCH_SIZE = 20;
       const allFiltered: FilteredContent[] = [];
 
@@ -243,41 +248,19 @@ export class AIIntelOrchestrator {
       }
 
       return allFiltered;
-    } else if (this.glm && this.glmFallback) {
-      return this.filterWithGLM(preFiltered);
+    } else if (this.useSkills) {
+      throw new Error('Pipeline agent is required');
     } else {
       return preFiltered.map(c => ({
         ...c,
         relevance: 1.0,
         topic: 'general',
         contentType: 'opinion',
-        authorCategory: 'unknown',
+        authorCategory: normalizeAuthorRole('unknown'),
         isSubstantive: true,
         brief: ''
       } as FilteredContent));
     }
-  }
-  
-  private async filterWithGLM(content: RawContent[]): Promise<FilteredContent[]> {
-    const BATCH_SIZE = 20;
-    const results: FilteredContent[] = [];
-    
-    for (let i = 0; i < content.length; i += BATCH_SIZE) {
-      const batch = content.slice(i, i + BATCH_SIZE);
-      const prompt = FILTER_PROMPT(batch);
-      
-      const response = await this.glm!.complete({
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.1,
-        responseFormat: { type: 'json_object' }
-      });
-      
-      const parsed = JSON.parse(response.content);
-      const filtered = this.applyFilterResults(batch, parsed);
-      results.push(...filtered);
-    }
-    
-    return results;
   }
   
   private applyFilterResults(content: RawContent[], result: any): FilteredContent[] {
@@ -291,9 +274,9 @@ export class AIIntelOrchestrator {
         return {
           ...item,
           relevance: assessment.relevance,
-          topic: assessment.topic || 'general',
+          topic: normalizeTopic(assessment.topic),
           contentType: assessment.contentType || 'opinion',
-          authorCategory: assessment.authorCategory || 'unknown',
+          authorCategory: normalizeAuthorRole(assessment.authorCategory),
           isSubstantive: assessment.isSubstantive !== false,
           brief: assessment.brief || ''
         } as FilteredContent;
@@ -305,45 +288,48 @@ export class AIIntelOrchestrator {
   // STAGE 2: EXTRACT
   // ============================================================================
   
-  private async extractStage(content: FilteredContent[]): Promise<ExtractedClaim[]> {
-    if (this.useSkills) {
-      // Process in batches of 10 (Agent SDK prompt limit for deeper extraction)
+  private async extractStage(content: FilteredContent[]): Promise<{
+    claims: ExtractedClaim[];
+    agentOutputs: number;
+    admittedClaims: number;
+  }> {
+    if (this.agent) {
+      // Process in batches of 10 (provider prompt limit for deeper extraction)
       const BATCH_SIZE = 10;
       const allClaims: ExtractedClaim[] = [];
+      let agentOutputs = 0;
 
       for (let i = 0; i < content.length; i += BATCH_SIZE) {
         const batch = content.slice(i, i + BATCH_SIZE);
         console.log(`  Extracting batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(content.length / BATCH_SIZE)} (${batch.length} items)`);
 
         const result = await this.agent.extractClaims(batch);
+        const rawClaims = Array.isArray(result?.claims) ? result.claims : [];
+        agentOutputs += typeof result?.agentOutputs === 'number'
+          ? result.agentOutputs
+          : rawClaims.length;
         const claims = this.normalizeClaimResults(result);
         allClaims.push(...claims);
       }
 
-      return allClaims;
-    } else {
-      return this.extractDirect(content);
+      return {
+        claims: allClaims,
+        agentOutputs,
+        admittedClaims: allClaims.length,
+      };
     }
+
+    if (this.useSkills) {
+      throw new Error('Pipeline agent is required');
+    }
+
+    const claims = this.extractDirect(content);
+    return { claims, agentOutputs: 0, admittedClaims: claims.length };
   }
   
   private extractDirect(content: FilteredContent[]): ExtractedClaim[] {
-    return content.map(item => ({
-      id: randomUUID(),
-      contentId: undefined,  // Will be set during storage
-      claimText: item.content?.slice(0, 500) || '',
-      claimType: 'opinion' as const,
-      topic: item.topic || 'general',
-      stance: 'neutral' as const,
-      bullishness: 0.5,
-      confidence: 0.5,
-      timeframe: null,
-      evidenceProvided: 'weak' as const,
-      quoteworthiness: 0.3,
-      relatedTo: [],
-      authorCategory: item.authorCategory || 'unknown',
-      sourceUrl: item.url,  // Used to link back to content during storage
-      extractedAt: new Date()
-    }));
+    if (content.length === 0) return [];
+    throw new Error('Claim extraction is disabled; refusing to fabricate claims');
   }
   
   private normalizeClaimResults(result: any): ExtractedClaim[] {
@@ -351,12 +337,14 @@ export class AIIntelOrchestrator {
     const claimsArray = result.claims || result.raw?.claims || [];
 
     for (const claim of claimsArray) {
+      const preserved = topicPreservation(claim.topic);
       claims.push({
         id: randomUUID(),
         contentId: claim.contentId,  // Will be set during storage if undefined
         claimText: claim.claimText || claim.text || '',
         claimType: claim.claimType || 'opinion',
-        topic: claim.topic || 'general',
+        topic: preserved.topic,
+        rawTopic: preserved.rawTopic,
         stance: claim.stance || 'neutral',
         bullishness: claim.bullishness ?? 0.5,
         confidence: claim.confidence ?? 0.5,
@@ -364,7 +352,7 @@ export class AIIntelOrchestrator {
         evidenceProvided: claim.evidenceProvided || 'weak',
         quoteworthiness: claim.quoteworthiness ?? 0.3,
         relatedTo: claim.relatedTo || [],
-        authorCategory: claim.authorCategory || 'unknown',
+        authorCategory: normalizeAuthorRole(claim.authorCategory),
         sourceUrl: claim.sourceUrl,  // Used to link back to content during storage
         extractedAt: new Date(),
         originalQuote: claim.originalQuote
@@ -404,7 +392,7 @@ export class AIIntelOrchestrator {
     filtered: FilteredContent[],
     claims: ExtractedClaim[],
     allInputContentIds: number[] = []
-  ): Promise<void> {
+  ): Promise<number> {
     // Content and claims are written together in a single transaction so a
     // mid-batch failure can't leave content marked processed without its claims
     // (or orphaned claims without content).
@@ -412,11 +400,8 @@ export class AIIntelOrchestrator {
     try {
       await client.query('BEGIN');
 
-      // Maps from content external IDs and URLs to database IDs. The URL map
-      // lets us resolve direct-extracted claims (USE_SKILLS=false), which carry
-      // a sourceUrl rather than a numeric contentId.
+      // Map from content external IDs to database IDs for this transaction.
       const contentIdMap = new Map<string, number>();
-      const urlToContentId = new Map<string, number>();
       const processedIdSet = new Set<number>(allInputContentIds);
       // Authoritative provenance for each content id resolved in this txn.
       // Claims may only inherit URL/author from entries here — never invent.
@@ -425,12 +410,19 @@ export class AIIntelOrchestrator {
         sourceIdentifier?: string | null;
         authorName?: string | null;
         author?: string | null;
+        authorCategory?: string | null;
+        contentText?: string;
       }>();
 
       const nonBlank = (v: unknown): string | undefined => {
         if (v == null) return undefined;
         const s = String(v).trim();
         return s === '' ? undefined : s;
+      };
+
+      const sourceTextOf = (item: any): string => {
+        const v = item?.content ?? item?.content_text ?? item?.contentText ?? '';
+        return typeof v === 'string' ? v : String(v ?? '');
       };
 
       const recordProvenance = (contentId: number, item: any) => {
@@ -442,13 +434,15 @@ export class AIIntelOrchestrator {
         const authorName =
           nonBlank(item.author_name) ?? nonBlank(item.authorName);
         const author = nonBlank(item.author);
+        const authorCategory = nonBlank(item.authorCategory) ?? nonBlank(item.author_category);
         contentProvenance.set(contentId, {
           url,
           sourceIdentifier,
           authorName,
           author,
+          authorCategory,
+          contentText: sourceTextOf(item),
         });
-        if (url) urlToContentId.set(url, contentId);
       };
 
       // First, store all content and collect their database IDs
@@ -457,7 +451,9 @@ export class AIIntelOrchestrator {
 
         // If content already has a database ID, use it directly (from getRecent/getUnprocessed)
         if (anyItem.id && typeof anyItem.id === 'number') {
-          const externalId = anyItem.external_id || `${item.source}_${item.publishedAt.getTime()}`;
+          const externalId = normalizeExternalId(
+            String(anyItem.external_id ?? '').trim() || `${item.source}_${item.publishedAt.getTime()}`,
+          );
           contentIdMap.set(externalId, anyItem.id);
           recordProvenance(anyItem.id, { ...anyItem, url: item.url ?? anyItem.url, author: item.author ?? anyItem.author });
           processedIdSet.add(anyItem.id);
@@ -471,7 +467,9 @@ export class AIIntelOrchestrator {
           continue;
         }
 
-        const externalId = item.id || `${item.source}_${item.publishedAt.getTime()}`;
+        const externalId = normalizeExternalId(
+          (item.id ?? '').trim() || `${item.source}_${item.publishedAt.getTime()}`,
+        );
         const contentId = await this.contentStore.upsert({
           sourceId,
           externalId,
@@ -500,36 +498,46 @@ export class AIIntelOrchestrator {
       // be attributed to one of these.
       const validContentIds = new Set(contentIdMap.values());
 
+      let storedCount = 0;
+
       // Now store claims with proper contentId references
       for (const claim of claims) {
-        // Resolve the claim's content reference: prefer the explicit contentId
-        // returned by extraction, then fall back to a sourceUrl lookup (by URL,
-        // or by external id for callers that pass one as sourceUrl).
+        // Resolve only from the server-selected numeric contentId. Model
+        // sourceUrl must not reparent evidence onto another batch item.
         const contentId =
-          (typeof claim.contentId === 'number' ? claim.contentId : undefined) ??
-          (claim.sourceUrl
-            ? (urlToContentId.get(claim.sourceUrl) ?? contentIdMap.get(claim.sourceUrl))
-            : undefined);
+          typeof claim.contentId === 'number' ? claim.contentId : undefined;
 
         // Only accept a reference we actually stored. Never guess an attribution:
         // for a provenance-driven system, a claim linked to the wrong source is
         // far worse than a dropped claim.
         if (!contentId || !validContentIds.has(contentId)) {
-          console.warn(`Dropping claim with unresolved content reference: "${claim.claimText?.slice(0, 50)}..."`);
+          console.warn('Dropping claim: unresolved content record');
           continue;
         }
 
         const prov = contentProvenance.get(contentId);
-        // Prefer extraction values when non-blank; otherwise inherit only from
-        // the resolved content record in this transaction.
-        const sourceUrl =
-          nonBlank(claim.sourceUrl) ??
-          nonBlank(prov?.url);
+        const originalQuote =
+          typeof claim.originalQuote === 'string' ? claim.originalQuote.trim() : '';
+        if (!originalQuote) {
+          console.warn('Dropping claim: missing originalQuote');
+          continue;
+        }
+        // Validate against the exact resolved batch item, never arbitrary sourceUrl.
+        const sourceText = prov?.contentText ?? '';
+        if (!sourceText.includes(originalQuote)) {
+          console.warn('Dropping claim: originalQuote not found in source');
+          continue;
+        }
+
+        // Derive source identity only from resolved selected-content provenance.
+        // Model-supplied sourceUrl/author/authorCategory cannot reparent evidence.
+        const sourceUrl = nonBlank(prov?.url);
         const author =
-          nonBlank(claim.author) ??
           nonBlank(prov?.sourceIdentifier) ??
           nonBlank(prov?.authorName) ??
           nonBlank(prov?.author);
+        const authorCategory =
+          nonBlank(prov?.authorCategory) ?? claim.authorCategory;
 
         await this.claimStore.upsert({
           contentId,
@@ -544,9 +552,9 @@ export class AIIntelOrchestrator {
           evidenceProvided: claim.evidenceProvided,
           quoteworthiness: claim.quoteworthiness,
           relatedTo: claim.relatedTo,
-          originalQuote: claim.originalQuote,
+          originalQuote,
           author,
-          authorCategory: claim.authorCategory,
+          authorCategory,
           sourceUrl,
           extractedAt: claim.extractedAt,
           // enrichStage attaches this via `(claim as any).embedding`, and ClaimStore.upsert only
@@ -555,6 +563,7 @@ export class AIIntelOrchestrator {
           // content_embeddings. The `as EnrichedClaim` cast below is what hid it from the compiler.
           embedding: (claim as any).embedding,
         } as EnrichedClaim, client);
+        storedCount += 1;
       }
 
       // Mark ALL input content IDs (including filtered-out noise) only after
@@ -565,6 +574,7 @@ export class AIIntelOrchestrator {
       }
 
       await client.query('COMMIT');
+      return storedCount;
     } catch (e) {
       await client.query('ROLLBACK');
       throw e;
@@ -580,7 +590,7 @@ export class AIIntelOrchestrator {
   private groupByTopic(claims: any[]): Record<string, any[]> {
     const groups: Record<string, any[]> = {};
     for (const claim of claims) {
-      const topic = claim.topic || 'general';
+      const topic = normalizeTopic(claim.topic);
       if (!groups[topic]) groups[topic] = [];
       groups[topic].push(claim);
     }
@@ -588,33 +598,27 @@ export class AIIntelOrchestrator {
   }
 
   private async synthesizeTopic(topic: string, claims: any[]): Promise<TopicSynthesis> {
+    if (!this.agent) {
+      throw new Error('Pipeline agent is required for synthesis');
+    }
     const result = await this.agent.synthesize(claims, topic);
-
-    return {
-      topic,
-      claimCount: claims.length, // Include for balanced digest coverage
-      labConsensus: result.labConsensus || '',
-      criticConsensus: result.criticConsensus || '',
-      agreements: result.agreements || [],
-      disagreements: result.disagreements || [],
-      emergingNarratives: result.emergingNarratives || [],
-      predictions: result.predictions || [],
-      evidenceQuality: result.evidenceQuality ?? 0.5,
-      hypeDelta: result.hypeDelta || { delta: 0, labSentiment: 0.5, criticSentiment: 0.5 },
-      synthesisNarrative: result.synthesisNarrative || ''
-    };
+    const canonical = toCanonicalTopicSynthesis(result, { topic, claimCount: claims.length });
+    if (canonical.unsupported) {
+      throw new ModelRoutingError('schema');
+    }
+    return canonical;
   }
   
   private async generateHypeAssessment(syntheses: TopicSynthesis[]): Promise<HypeAssessment> {
+    if (!this.agent) {
+      throw new Error('Pipeline agent is required for hype assessment');
+    }
     const result = await this.agent.useSkill('hype-assessment', { syntheses });
-    
-    return {
-      overhypedTopics: result.overhypedTopics || [],
-      underhypedTopics: result.underhypedTopics || [],
-      accuratelyAssessedTopics: result.accuratelyAssessedTopics || [],
-      overallFieldSentiment: result.overallFieldSentiment ?? 0.5,
-      summary: result.summary || ''
-    };
+    const parsed = HypeAssessmentSchema.safeParse(result);
+    if (!parsed.success) {
+      throw new ModelRoutingError('schema');
+    }
+    return parsed.data as HypeAssessment;
   }
   
   // ============================================================================
@@ -630,19 +634,22 @@ export class AIIntelOrchestrator {
   }
 
   async listSkills(): Promise<string[]> {
-    return this.agent.listSkills();
+    return [];
   }
   
   async listAgents(): Promise<string[]> {
-    return this.agent.listAgents();
+    return [];
   }
   
   async useSkill(skillName: string, input: any): Promise<any> {
+    if (!this.agent) {
+      throw new Error('Pipeline agent is required');
+    }
     return this.agent.useSkill(skillName, input);
   }
   
-  async spawnSubagent(agentName: string, task: string): Promise<any> {
-    return this.agent.spawnSubagent(agentName, task);
+  async spawnSubagent(_agentName: string, _task: string): Promise<any> {
+    throw new Error('Subagents are not available on the production pipeline agent');
   }
 }
 
@@ -650,7 +657,6 @@ export class AIIntelOrchestrator {
 // EXPORTS
 // ============================================================================
 
-export { AIIntelAgent, GLMClient, ZAI_CONFIG } from './agent-sdk-wrapper';
 export { ContentStore, ClaimStore, SynthesisStore } from './storage';
 export { EmbeddingService } from './embeddings';
 export { AIIntelFetcher, seedSources } from './fetcher';

@@ -95,7 +95,7 @@
     { "url": "https://www.interconnects.ai/feed", "author": "Nathan Lambert", "category": "ai2", "tier": 1 },
     { "url": "https://magazine.sebastianraschka.com/feed", "author": "Sebastian Raschka", "category": "independent", "tier": 1 },
     { "url": "https://www.latent.space/feed", "author": "swyx & Alessio", "category": "independent", "tier": 1 },
-    { "url": "https://www.deeplearning.ai/the-batch/feed/", "author": "Andrew Ng", "category": "academic", "tier": 1 },
+    { "url": "https://www.deeplearning.ai/the-batch/feed/", "author": "Andrew Ng", "category": "academic", "tier": 1, "isActive": false },
     { "url": "https://aiguide.substack.com/feed", "author": "Melanie Mitchell", "category": "critics", "tier": 1 },
 
     { "url": "https://www.oneusefulthing.org/feed", "author": "Ethan Mollick", "category": "academic", "tier": 2 },
@@ -108,7 +108,7 @@
     { "url": "https://newsletter.safe.ai/feed", "author": "Dan Hendrycks", "category": "safety", "tier": 3 },
 
     { "url": "https://www.therundown.ai/feed", "author": "Rowan Cheung", "category": "independent", "tier": 4 },
-    { "url": "https://bensbites.beehiiv.com/feed", "author": "Ben Tossell", "category": "independent", "tier": 4 },
+    { "url": "https://www.bensbites.com/feed", "author": "Ben Tossell", "category": "independent", "tier": 4 },
     { "url": "https://lastweekin.ai/feed", "author": "Multiple", "category": "independent", "tier": 4 },
     { "url": "https://newsletter.ruder.io/feed", "author": "Sebastian Ruder", "category": "deepmind", "tier": 4 },
     { "url": "https://simonw.substack.com/feed", "author": "Simon Willison", "category": "independent", "tier": 4 },
@@ -117,16 +117,16 @@
 
   "youtube": [
     { "id": "UCWN3xxRkmTPmbKwht9FuE5A", "name": "Andrej Karpathy", "category": "openai", "type": "tutorials" },
-    { "id": "UCZHmQk67mN31hHzLZcVbrqQ", "name": "Yannic Kilcher", "category": "independent", "type": "paper_reviews" },
+    { "id": "UCZHmQk67mSJgfCCTn7xBfew", "name": "Yannic Kilcher", "category": "independent", "type": "paper_reviews" },
     { "id": "UCbfYPyITQ-7l4upoX8nvctg", "name": "Two Minute Papers", "category": "independent", "type": "paper_reviews" },
     { "id": "UCYO_jab_esuFRV4b17AJtAw", "name": "3Blue1Brown", "category": "academic", "type": "tutorials" },
     { "id": "UCzBjutX2PmitNF4avysL-vg", "name": "StatQuest", "category": "academic", "type": "tutorials" },
     { "id": "UCcIXc5mJsHVYTZR1maL5l9w", "name": "DeepLearning.AI", "category": "academic", "type": "tutorials" },
     { "id": "UCfzlCWGWYyIQ0aLC5w48gBQ", "name": "Sentdex", "category": "independent", "type": "tutorials" },
-    { "id": "UCxVqU5e5uIp8K9DkJv7HXGA", "name": "AI Explained", "category": "independent", "type": "paper_reviews" },
+    { "id": "UCNJ1Ymd5yFuUPtn21xtRbbw", "name": "AI Explained", "category": "independent", "type": "paper_reviews" },
     { "id": "UCMLtBahI5DMrt0NPvDSoIRQ", "name": "Machine Learning Street Talk", "category": "independent", "type": "paper_reviews" },
-    { "id": "UCpZ2V6tS0Rq2G5WlxfRpqpQ", "name": "The AI Epiphany", "category": "independent", "type": "paper_reviews" },
-    { "id": "UC1hJ-Mhdb8fXkHMsKNWkVOw", "name": "Dwarkesh Patel", "category": "independent", "type": "interviews" },
+    { "id": "UCj8shE7aIn4Yawwbo2FceCQ", "name": "The AI Epiphany", "category": "independent", "type": "paper_reviews" },
+    { "id": "UCXl4i9dYBrFOabk0xGmbkRA", "name": "Dwarkesh Patel", "category": "independent", "type": "interviews" },
     { "id": "UCSHZKyawb77ixDdsGog4iWA", "name": "Lex Fridman", "category": "independent", "type": "interviews" }
   ],
 
@@ -137,15 +137,15 @@
     { "url": "https://rodneybrooks.com/feed/", "author": "Rodney Brooks", "category": "critics" },
     { "url": "https://karpathy.github.io/feed.xml", "author": "Andrej Karpathy", "category": "openai" },
     { "url": "https://jalammar.github.io/feed.xml", "author": "Jay Alammar", "category": "independent" },
-    { "url": "https://ruder.io/rss/index.rss", "author": "Sebastian Ruder", "category": "deepmind" },
+    { "url": "https://ruder.io/rss/index.rss", "author": "Sebastian Ruder", "category": "deepmind", "isActive": false },
 
-    { "url": "https://www.anthropic.com/research/rss.xml", "author": "Anthropic Research", "category": "anthropic" },
-    { "url": "https://openai.com/blog/rss/", "author": "OpenAI Blog", "category": "openai" },
-    { "url": "https://deepmind.google/discover/blog/rss.xml", "author": "DeepMind Blog", "category": "deepmind" },
-    { "url": "https://ai.googleblog.com/feeds/posts/default", "author": "Google AI Blog", "category": "deepmind" },
-    { "url": "https://ai.meta.com/blog/rss/", "author": "Meta AI Blog", "category": "meta" },
+    { "url": "https://www.anthropic.com/research/rss.xml", "author": "Anthropic Research", "category": "anthropic", "isActive": false },
+    { "url": "https://openai.com/news/rss.xml", "author": "OpenAI Blog", "category": "openai" },
+    { "url": "https://deepmind.google/blog/rss.xml", "author": "DeepMind Blog", "category": "deepmind" },
+    { "url": "https://research.google/blog/rss/", "author": "Google AI Blog", "category": "google" },
+    { "url": "https://ai.meta.com/blog/rss/", "author": "Meta AI Blog", "category": "meta", "isActive": false },
 
-    { "url": "https://bair.berkeley.edu/blog/feed.xml", "author": "BAIR Blog", "category": "academic" },
+    { "url": "https://bair.berkeley.edu/blog/feed.xml", "author": "BAIR Blog", "category": "academic", "isActive": false },
     { "url": "https://ai.stanford.edu/blog/feed.xml", "author": "Stanford AI Lab Blog", "category": "academic" },
     { "url": "https://www.microsoft.com/en-us/research/feed/", "author": "Microsoft Research", "category": "independent" },
 
@@ -183,11 +183,11 @@
     { "name": "Latent Space Podcast", "rss": "https://www.latent.space/feed", "category": "independent" },
     { "name": "TWIML AI", "rss": "https://twimlai.com/feed/", "category": "independent" },
     { "name": "Lex Fridman Podcast", "rss": "https://lexfridman.com/feed/podcast/", "category": "independent" },
-    { "name": "Dwarkesh Podcast", "rss": "https://feeds.megaphone.fm/dwarkeshpatel", "category": "independent" },
+    { "name": "Dwarkesh Podcast", "rss": "https://www.dwarkesh.com/feed", "category": "independent" },
     { "name": "80,000 Hours", "rss": "https://feeds.transistor.fm/80-000-hours-podcast", "category": "safety" },
-    { "name": "The Robot Brains", "rss": "https://therobotbrains.libsyn.com/rss", "category": "academic" },
-    { "name": "The Cognitive Revolution", "rss": "https://www.cognitiverevolution.ai/feed", "category": "independent" },
-    { "name": "Gradient Dissent", "rss": "https://feeds.simplecast.com/o8HFE2Nm", "category": "independent" },
+    { "name": "The Robot Brains", "rss": "https://feeds.acast.com/public/shows/the-robot-brains", "category": "academic" },
+    { "name": "The Cognitive Revolution", "rss": "https://feeds.megaphone.fm/RINTP3108857801", "category": "independent" },
+    { "name": "Gradient Dissent", "rss": "https://feeds.captivate.fm/gradient-dissent/", "category": "independent" },
     { "name": "Practical AI", "rss": "https://changelog.com/practicalai/feed", "category": "independent" },
     { "name": "Hard Fork", "rss": "https://feeds.simplecast.com/l2i9YnTd", "category": "independent" }
   ]

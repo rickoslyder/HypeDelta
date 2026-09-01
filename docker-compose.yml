@@ -68,6 +68,7 @@ services:
     environment:
       DATABASE_URL: postgresql://aiintel:${POSTGRES_PASSWORD:-aiintel_secure_password}@postgres:5432/ai_intel
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
       NODE_ENV: production
     ports:
       - "3000:3000"

@@ -6,19 +6,29 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+
 jobs:
-  core:
-    name: Core package (lint, typecheck, test)
+  quality:
+    name: quality
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      # pnpm version is read from the "packageManager" field in package.json
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - name: Install dependencies
@@ -30,24 +40,187 @@ jobs:
       - name: Typecheck
         run: pnpm run typecheck
 
-      - name: Test
-        run: pnpm test run
+      - name: Test (unit; PG integration skipped without env)
+        run: pnpm exec vitest run
 
-  web:
-    name: Web app (lint)
+      - name: Build core
+        run: pnpm run build
+
+      - name: Build worker artifacts
+        run: pnpm run build:worker
+
+      - name: Worker artifact smoke (help + unreachable-DB fail-closed)
+        run: |
+          set -euo pipefail
+          node dist/cli-worker.js --help >/tmp/hd-cli-help.txt
+          test -s /tmp/hd-cli-help.txt
+          HB_DIR="$(mktemp -d)"
+          export WORKER_HEARTBEAT_PATH="$HB_DIR/heartbeat.json"
+          export WORKER_RUN_INITIAL_CYCLE=false
+          export DATABASE_URL="postgresql://ci_placeholder:ci-${{ github.run_id }}@127.0.0.1:1/ci_placeholder"
+          export DEEPSEEK_API_KEY="ds-${{ github.run_id }}"
+          export KIMI_CODING_API_KEY="kimi-${{ github.run_id }}"
+          export WORKER_HEARTBEAT_MAX_AGE_MS=600000
+          worker_exit=0
+          node dist/worker.js >/tmp/hd-worker-smoke.log 2>&1 || worker_exit=$?
+          test "$worker_exit" -ne 0
+          test -f "$WORKER_HEARTBEAT_PATH"
+          node -e '
+            const fs = require("fs");
+            const hb = JSON.parse(fs.readFileSync(process.env.WORKER_HEARTBEAT_PATH, "utf8"));
+            if (hb.status !== "failed") process.exit(1);
+            if (typeof hb.error_class !== "string" || hb.error_class.length < 1) process.exit(1);
+          '
+          hc_exit=0
+          node dist/worker-healthcheck.js || hc_exit=$?
+          test "$hc_exit" -ne 0
+
+      - name: Web production build
+        run: pnpm --filter @hypedelta/web build
+
+  postgres-integration:
+    name: postgres-integration
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      hypedelta-ci-pg-16:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: hypedelta_ci
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: hypedelta_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hypedelta_ci -d hypedelta_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      RUN_POSTGRES_INTEGRATION: "1"
+      DATABASE_URL: postgresql://hypedelta_ci@127.0.0.1:5432/hypedelta_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Lint
-        run: pnpm --filter @hypedelta/web lint
+      - name: Real PostgreSQL integration tests
+        run: pnpm exec vitest run src/__tests__/postgres.integration.test.ts
+
+  release-images:
+    name: release-images
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Contract tests
+        run: pnpm exec vitest run src/__tests__/release-contract.test.ts src/__tests__/verify-production-compose.test.ts
+
+      - name: Render production Compose JSON and verify
+        env:
+          # Clearly fake CI-only required values (low entropy, not repository secrets)
+          POSTGRES_PASSWORD: render-${{ github.run_id }}
+          DATABASE_URL: postgresql://ci:render-${{ github.run_id }}@postgres:5432/ai_intel
+          TWITTER_API_KEY: ci_twitter_key
+          DEEPSEEK_API_KEY: ds-${{ github.run_id }}
+          KIMI_CODING_API_KEY: kimi-${{ github.run_id }}
+          CLAUDE_CODE_OAUTH_TOKEN: ci_claude_token
+          ADMIN_PASSWORD: ci_admin_pass
+          ADMIN_SESSION_SECRET: ci_admin_session
+          WEB_IMAGE: ghcr.io/hypedelta-ci/web:sha-${{ github.sha }}
+          WORKER_IMAGE: ghcr.io/hypedelta-ci/worker:sha-${{ github.sha }}
+          WORKER_RUN_INITIAL_CYCLE: "false"
+        run: |
+          set -euo pipefail
+          docker compose -f deploy/docker-compose.production.yml config --format json > /tmp/hd-compose-rendered.json
+          node scripts/verify-production-compose.mjs /tmp/hd-compose-rendered.json
+
+      - name: Build worker image
+        run: |
+          set -euo pipefail
+          docker build \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            -t "hypedelta-worker:ci-${{ github.sha }}" \
+            -f Dockerfile \
+            .
+
+      - name: Build web image
+        run: |
+          set -euo pipefail
+          docker build \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            -t "hypedelta-web:ci-${{ github.sha }}" \
+            -f apps/web/Dockerfile \
+            .
+
+      - name: Inspect image labels and JSON-form HEALTHCHECK
+        run: |
+          set -euo pipefail
+          SHA="${{ github.sha }}"
+          for img in "hypedelta-worker:ci-${SHA}" "hypedelta-web:ci-${SHA}"; do
+            rev="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$img")"
+            test "$rev" = "$SHA"
+            # Healthcheck must be present (non-null) and Test is JSON/exec form (CMD not CMD-SHELL)
+            hc="$(docker image inspect --format '{{ json .Config.Healthcheck }}' "$img")"
+            test "$hc" != "null"
+            echo "$hc" | grep -q '"Test"'
+            echo "$hc" | grep -q 'CMD'
+            if echo "$hc" | grep -q 'CMD-SHELL'; then
+              echo "CMD-SHELL healthcheck forbidden on $img" >&2
+              exit 1
+            fi
+          done
+
+      - name: Worker image heartbeat smoke (unreachable DB fail-closed)
+        run: |
+          set -euo pipefail
+          SHA="${{ github.sha }}"
+          IMG="hypedelta-worker:ci-${SHA}"
+          HB_DIR="$(mktemp -d)"
+          chmod 777 "$HB_DIR"
+          container_exit=0
+          docker run --rm \
+            -e WORKER_RUN_INITIAL_CYCLE=false \
+            -e DATABASE_URL="postgresql://ci:ci-${{ github.run_id }}@127.0.0.1:1/ci" \
+            -e DEEPSEEK_API_KEY="ds-${{ github.run_id }}" \
+            -e KIMI_CODING_API_KEY="kimi-${{ github.run_id }}" \
+            -e WORKER_HEARTBEAT_PATH="/tmp/hypedelta-hb/heartbeat.json" \
+            -e WORKER_HEARTBEAT_MAX_AGE_MS=600000 \
+            -v "$HB_DIR:/tmp/hypedelta-hb" \
+            "$IMG" || container_exit=$?
+          test "$container_exit" -ne 0
+          test -f "$HB_DIR/heartbeat.json"
+          node -e '
+            const fs = require("fs");
+            const hb = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (hb.status !== "failed") process.exit(1);
+            if (typeof hb.error_class !== "string" || hb.error_class.length < 1) process.exit(1);
+          ' "$HB_DIR/heartbeat.json"
+          hc_exit=0
+          docker run --rm \
+            --entrypoint node \
+            -e WORKER_HEARTBEAT_PATH="/tmp/hypedelta-hb/heartbeat.json" \
+            -e WORKER_HEARTBEAT_MAX_AGE_MS=600000 \
+            -v "$HB_DIR:/tmp/hypedelta-hb:ro" \
+            "$IMG" \
+            dist/worker-healthcheck.js || hc_exit=$?
+          test "$hc_exit" -ne 0

@@ -10,6 +10,13 @@ import { JSDOM } from 'jsdom';
 import { execSync } from 'child_process';
 import type { RawContent, SourceType, Source, ContentCategory } from './types';
 import { ContentStore, SourceStore } from './storage';
+import { normalizeExternalId } from './external-id';
+import {
+  classifyPipelineError,
+  sanitizePipelineErrorMessage,
+  type PipelineErrorClass,
+} from './pipeline-error';
+import type { SourceFetchAttemptInput } from './pipeline-ledger';
 import sourcesData from '../data/sources.json';
 
 // ============================================================================
@@ -38,6 +45,163 @@ const TWITTER_BATCH_CONFIG = {
   maxPagesPerBatch: Number(process.env.TWITTER_MAX_PAGES_PER_BATCH ?? 5),
 };
 
+const TWITTER_ERROR_MAX = 300;
+
+function twitterFetchTimeoutMs(): number {
+  const raw = Number(process.env.TWITTER_FETCH_TIMEOUT_MS);
+  if (!Number.isFinite(raw) || raw <= 0) return 15_000;
+  return Math.min(30_000, Math.max(5_000, Math.trunc(raw)));
+}
+
+function twitterRequestInit(): RequestInit {
+  return {
+    headers: { 'X-API-Key': TWITTER_API_CONFIG.apiKey },
+    signal: AbortSignal.timeout(twitterFetchTimeoutMs()),
+  };
+}
+
+function boundTwitterError(err: unknown): string {
+  const key = TWITTER_API_CONFIG.apiKey;
+  let msg = err instanceof Error ? err.message : String(err);
+  if (key) msg = msg.split(key).join('[redacted]');
+  msg = msg.replace(/\s+/g, ' ').trim();
+  if (msg.length > TWITTER_ERROR_MAX) msg = msg.slice(0, TWITTER_ERROR_MAX);
+  return msg || 'Twitter fetch failed';
+}
+
+async function twitterHttpError(status: number, _response?: Response): Promise<Error> {
+  const err = new Error(boundTwitterError(`Twitter API HTTP ${status}`)) as Error & { status: number };
+  err.status = status;
+  return err;
+}
+
+export type SourceFetchKind = 'success-empty' | 'success-items' | 'failure';
+
+export interface SourceFetchOutcome {
+  kind: SourceFetchKind;
+  source: string;
+  sourceId: number;
+  persisted: number;
+  errorClass?: PipelineErrorClass;
+  reason?: string;
+}
+
+export interface FetchSourcesSummary {
+  successEmpty: number;
+  successItems: number;
+  failed: number;
+  persistedRows: number;
+  skippedCircuit: number;
+  failuresByClass: Partial<Record<PipelineErrorClass, number>>;
+}
+
+export interface FetchSourceFailure {
+  source: string;
+  error?: string;
+  errorClass?: PipelineErrorClass;
+  reason?: string;
+}
+
+export interface FetchSourcesResult {
+  successful: { source: string; count: number }[];
+  failed: FetchSourceFailure[];
+  outcomes: SourceFetchOutcome[];
+  summary: FetchSourcesSummary;
+}
+
+export interface FetcherConfig {
+  dbUrl: string;
+  sourceFetchAttemptStore?: {
+    record(input: SourceFetchAttemptInput): Promise<number>;
+  };
+  // 12C2 injection seams: tests pass a no-op recorder for sleep and a manual clock.
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+function emptyFetchSummary(): FetchSourcesSummary {
+  return {
+    successEmpty: 0,
+    successItems: 0,
+    failed: 0,
+    persistedRows: 0,
+    skippedCircuit: 0,
+    failuresByClass: {},
+  };
+}
+
+function providerForSource(source: Source): string | null {
+  return (source.type as SourceType) === 'twitter' ? 'twitterapi.io' : source.type ?? null;
+}
+
+function failureParts(error: unknown): { errorClass: PipelineErrorClass; reason: string } {
+  const errorClass = classifyPipelineError(error);
+  const reason = sanitizePipelineErrorMessage(boundTwitterError(error));
+  return { errorClass, reason: reason || 'fetch failed' };
+}
+
+// ============================================================================
+// 12C2: twitterapi.io paid-provider retry + circuit breaker
+// ============================================================================
+//
+// One shared helper (twitterPaidFetch) fronts every paid twitterapi.io call:
+// advanced_search (batched + monitorTwitter) and last_tweets. Bounded retries
+// apply ONLY to transient classes (dns/timeout/rate_limit/http_5xx and explicit
+// network/fetch failures); auth, http_4xx, parse, database, missing-key and
+// circuit-open failures are never retried. Each request gets at most 3 total
+// attempts with 250ms then 500ms backoff (750ms max, via injectable sleep).
+//
+// Each transient request that exhausts its attempts increments the breaker
+// once; at exactly 3 the circuit opens for a 5-minute cooldown (injectable
+// clock). While open, no paid fetch is attempted and Nitter fallthrough is
+// suppressed; the first request after cooldown is a half-open probe whose
+// success (including a valid empty page) closes and resets the breaker, and
+// whose transient failure reopens it for another 5 minutes.
+
+const TWITTER_RETRY_CONFIG = {
+  maxAttempts: 3,
+  backoffMs: [250, 500] as const, // wait before attempt 2 and 3 => 750ms max/request
+  breakerOpenThreshold: 3,
+  breakerCooldownMs: 5 * 60 * 1000,
+};
+
+class TwitterCircuitOpenError extends Error {
+  readonly circuitOpen = true;
+  constructor(openUntil: number) {
+    // Message intentionally names the provider so 12C1 classification lands
+    // on 'provider' without any new DB enum value.
+    super(`twitterapi.io provider circuit open until ${new Date(openUntil).toISOString()}; paid fetch suppressed`);
+    this.name = 'TwitterCircuitOpenError';
+  }
+}
+
+function isCircuitOpenError(err: unknown): boolean {
+  return (
+    err instanceof TwitterCircuitOpenError ||
+    (typeof err === 'object' && err !== null && (err as { circuitOpen?: unknown }).circuitOpen === true)
+  );
+}
+
+function isTransientTwitterError(err: unknown): boolean {
+  const cls = classifyPipelineError(err);
+  if (cls === 'dns' || cls === 'timeout' || cls === 'rate_limit' || cls === 'http_5xx') {
+    return true;
+  }
+  // Explicit provider-transient network/fetch failures from the fetch layer.
+  const shape = err as { code?: unknown; message?: unknown; cause?: unknown } | null;
+  const code = typeof shape?.code === 'string' ? shape.code.toUpperCase() : '';
+  if (/^(ECONNRESET|ECONNREFUSED|ECONNABORTED|EPIPE|EHOSTUNREACH|ENETUNREACH|UND_ERR_(?:SOCKET|CONNECT_TIMEOUT|HEADERS_TIMEOUT|BODY_TIMEOUT))$/.test(code)) {
+    return true;
+  }
+  const msg = typeof shape?.message === 'string' ? shape.message.toLowerCase() : '';
+  if (err instanceof TypeError && /fetch failed|network ?error|socket|connection (?:reset|refused|closed)/.test(msg)) {
+    return true;
+  }
+  const cause = shape?.cause;
+  if (cause != null && cause !== err) return isTransientTwitterError(cause);
+  return false;
+}
+
 // Legacy Nitter instances (fallback, mostly non-functional as of 2025)
 const NITTER_INSTANCES = [
   'nitter.poast.org',
@@ -52,10 +216,21 @@ export class AIIntelFetcher {
   private contentStore: ContentStore;
   private sourceStore: SourceStore;
   private rssParser: Parser;
-  
-  constructor(config: { dbUrl: string }) {
+  private sourceFetchAttemptStore?: FetcherConfig['sourceFetchAttemptStore'];
+  private sleepOverride?: (ms: number) => Promise<void>;
+  private nowFn: () => number;
+  private twitterBreaker = {
+    exhausted: 0,
+    openUntil: null as number | null,
+    halfOpenInFlight: false,
+  };
+
+  constructor(config: FetcherConfig) {
     this.contentStore = new ContentStore(config.dbUrl);
     this.sourceStore = new SourceStore(config.dbUrl);
+    this.sourceFetchAttemptStore = config.sourceFetchAttemptStore;
+    this.sleepOverride = config.sleep;
+    this.nowFn = config.now ?? (() => Date.now());
     this.rssParser = new Parser({
       customFields: {
         item: [
@@ -65,26 +240,36 @@ export class AIIntelFetcher {
       }
     });
   }
+
+  /**
+   * Release owned DB pools. CLI one-shots must call this; the long-lived
+   * scheduler must not, except on explicit shutdown.
+   */
+  async close(): Promise<void> {
+    await Promise.all([this.contentStore.close(), this.sourceStore.close()]);
+  }
   
   /**
    * Fetch content from multiple sources
    */
-  async fetchSources(sources: Source[]): Promise<{
-    successful: { source: string; count: number }[];
-    failed: { source: string; error: string }[];
-  }> {
+  async fetchSources(sources: Source[]): Promise<FetchSourcesResult> {
     const successful: { source: string; count: number }[] = [];
-    const failed: { source: string; error: string }[] = [];
+    const failed: FetchSourceFailure[] = [];
+    const outcomes: SourceFetchOutcome[] = [];
+    const summary = emptyFetchSummary();
 
     // Twitter is fetched up front in ORed, time-windowed batches rather than one
     // last_tweets call per handle -- see fetchTwitterBatched for why (that path re-bought the
     // same ~20 tweets per handle every cycle at 15 credits each). Everything else keeps the
     // original per-source path.
     let twitterBatched: Map<string, RawContent[]> | null = null;
+    let twitterBatchFailed: Map<string, unknown> | null = null;
     if (TWITTER_BATCH_CONFIG.enabled) {
       const twitterSources = sources.filter(s => (s.type as SourceType) === 'twitter');
       if (twitterSources.length > 0) {
-        twitterBatched = await this.fetchTwitterBatched(twitterSources);
+        const batched = await this.fetchTwitterBatched(twitterSources);
+        twitterBatched = batched.content;
+        twitterBatchFailed = batched.failed;
       }
     }
 
@@ -99,7 +284,20 @@ export class AIIntelFetcher {
 
     await Promise.all(Array.from(byType.values()).map(async (group) => {
       for (const source of group) {
+        const startedAt = new Date();
         try {
+          if (twitterBatchFailed?.has(source.identifier)) {
+            await this.finishSourceFailure(
+              source,
+              twitterBatchFailed.get(source.identifier),
+              startedAt,
+              failed,
+              outcomes,
+              summary,
+            );
+            continue;
+          }
+
           // Batched results are already in hand for twitter; do not re-fetch (that would
           // re-incur the very cost this exists to avoid).
           const content = (twitterBatched && (source.type as SourceType) === 'twitter')
@@ -107,10 +305,13 @@ export class AIIntelFetcher {
             : await this.fetchSource(source);
 
           // Store content
+          let persisted = 0;
           for (const item of content) {
             await this.contentStore.upsert({
               sourceId: source.id!,
-              externalId: item.id || `${source.identifier}_${item.publishedAt.getTime()}`,
+              externalId: normalizeExternalId(
+                (item.id ?? '').trim() || `${source.identifier}_${item.publishedAt.getTime()}`,
+              ),
               url: item.url,
               title: item.title,
               contentText: item.content,
@@ -119,12 +320,32 @@ export class AIIntelFetcher {
               publishedAt: item.publishedAt,
               metadata: item.metadata
             });
+            persisted += 1;
           }
 
-          // Mark source as fetched
+          // Mark source as fetched only after persist succeeds (including valid-empty).
           await this.sourceStore.markFetched(source.id!);
 
+          const kind: SourceFetchKind = content.length === 0 ? 'success-empty' : 'success-items';
+          if (kind === 'success-empty') summary.successEmpty += 1;
+          else summary.successItems += 1;
+          summary.persistedRows += persisted;
+          outcomes.push({
+            kind,
+            source: source.identifier,
+            sourceId: source.id!,
+            persisted,
+          });
           successful.push({ source: source.identifier, count: content.length });
+          await this.recordSourceAttempt({
+            sourceId: source.id!,
+            sourceType: source.type,
+            provider: providerForSource(source),
+            startedAt,
+            finishedAt: new Date(),
+            ok: true,
+            itemCount: persisted,
+          });
 
           // Rate limit between same-provider sources. Skipped for twitter when the batch
           // already ran -- there is no per-source request left to pace.
@@ -133,16 +354,73 @@ export class AIIntelFetcher {
           }
 
         } catch (error) {
-          failed.push({
-            source: source.identifier,
-            error: error instanceof Error ? error.message : String(error)
-          });
+          await this.finishSourceFailure(
+            source,
+            error,
+            startedAt,
+            failed,
+            outcomes,
+            summary,
+          );
         }
       }
     }));
 
-    return { successful, failed };
+    return { successful, failed, outcomes, summary };
   }
+
+  private async recordSourceAttempt(input: SourceFetchAttemptInput): Promise<void> {
+    if (!this.sourceFetchAttemptStore) return;
+    try {
+      await this.sourceFetchAttemptStore.record(input);
+    } catch {
+      // Ledger rejection must not retry, add a second outcome, or undo markFetched.
+      console.error('Fetch attempt ledger write failed');
+    }
+  }
+
+  private async finishSourceFailure(
+    source: Source,
+    error: unknown,
+    startedAt: Date,
+    failed: FetchSourceFailure[],
+    outcomes: SourceFetchOutcome[],
+    summary: FetchSourcesSummary,
+  ): Promise<void> {
+    const { errorClass, reason } = failureParts(error);
+    summary.failed += 1;
+    if (isCircuitOpenError(error)) {
+      // 12C2: a source whose FINAL failure is the paid-provider circuit being
+      // open is counted exactly once here — never for retry attempts (those do
+      // not reach this path) and never for unrelated failure classes.
+      summary.skippedCircuit += 1;
+    }
+    summary.failuresByClass[errorClass] = (summary.failuresByClass[errorClass] ?? 0) + 1;
+    outcomes.push({
+      kind: 'failure',
+      source: source.identifier,
+      sourceId: source.id!,
+      persisted: 0,
+      errorClass,
+      reason,
+    });
+    if (this.sourceFetchAttemptStore) {
+      failed.push({ source: source.identifier, errorClass, reason });
+    } else {
+      failed.push({ source: source.identifier, error: reason });
+    }
+    await this.recordSourceAttempt({
+      sourceId: source.id!,
+      sourceType: source.type,
+      provider: providerForSource(source),
+      startedAt,
+      finishedAt: new Date(),
+      ok: false,
+      itemCount: 0,
+      error,
+    });
+  }
+
   
   /**
    * Batched, time-windowed Twitter fetch.
@@ -171,10 +449,14 @@ export class AIIntelFetcher {
    */
   private async fetchTwitterBatched(
     sources: Source[]
-  ): Promise<Map<string, RawContent[]>> {
+  ): Promise<{ content: Map<string, RawContent[]>; failed: Map<string, unknown> }> {
     const out = new Map<string, RawContent[]>();
+    const failed = new Map<string, unknown>();
     for (const s of sources) out.set(s.identifier, []);
-    if (!TWITTER_API_CONFIG.apiKey) return out;
+    if (!TWITTER_API_CONFIG.apiKey) {
+      for (const s of sources) failed.set(s.identifier, 'TWITTER_API_KEY is not configured');
+      return { content: out, failed };
+    }
 
     const nowSec = Math.floor(Date.now() / 1000);
     const maxLookbackSec = TWITTER_BATCH_CONFIG.maxLookbackHours * 3600;
@@ -208,21 +490,16 @@ export class AIIntelFetcher {
         let cursor = '';
         let pages = 0;
         while (pages < TWITTER_BATCH_CONFIG.maxPagesPerBatch) {
-          const since = Date.now() - lastTwitterApiCall;
+          const since = this.nowFn() - lastTwitterApiCall;
           if (since < TWITTER_API_CONFIG.rateLimitMs) {
             await this.sleep(TWITTER_API_CONFIG.rateLimitMs - since);
           }
-          lastTwitterApiCall = Date.now();
+          lastTwitterApiCall = this.nowFn();
 
           const url = `${TWITTER_API_CONFIG.baseUrl}/twitter/tweet/advanced_search`
             + `?query=${encodeURIComponent(query)}&queryType=Latest`
             + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '');
-          const response = await fetch(url, {
-            headers: { 'X-API-Key': TWITTER_API_CONFIG.apiKey },
-          });
-          if (!response.ok) {
-            throw new Error(`advanced_search returned ${response.status}: ${await response.text()}`);
-          }
+          const response = await this.twitterPaidFetch(url);
 
           const data = await response.json() as {
             tweets?: Array<{
@@ -266,19 +543,28 @@ export class AIIntelFetcher {
           cursor = data.next_cursor;
         }
       } catch (e) {
+        if (isCircuitOpenError(e)) {
+          // 12C2: circuit open — zero paid calls happened; every handle in this
+          // batch (and the remaining batches) is a circuit-skip, NOT a per-handle
+          // fallback (that would issue paid calls and/or Nitter fallthrough).
+          for (const s of batch) failed.set(s.identifier, e);
+          continue;
+        }
         // Degrade to the original per-handle path for this batch only.
-        console.warn(`Batched Twitter fetch failed (${batch.length} handles): ${e}; falling back per-handle`);
+        console.warn(`Batched Twitter fetch failed (${batch.length} handles): ${boundTwitterError(e)}; falling back per-handle`);
         for (const s of batch) {
           try {
             out.set(s.identifier, await this.fetchTwitter(s.identifier, s.authorName));
           } catch (inner) {
-            console.warn(`Per-handle fallback failed for ${s.identifier}: ${inner}`);
+            const msg = boundTwitterError(inner);
+            console.warn(`Per-handle fallback failed for ${s.identifier}: ${msg}`);
+            failed.set(s.identifier, inner);
           }
         }
       }
     }
 
-    return out;
+    return { content: out, failed };
   }
 
   /**
@@ -313,40 +599,42 @@ export class AIIntelFetcher {
 
   async fetchTwitter(handle: string, authorName?: string): Promise<RawContent[]> {
     // Primary: TwitterAPI.io
+    let apiError: unknown;
     if (TWITTER_API_CONFIG.apiKey) {
       try {
         return await this.fetchTwitterViaAPI(handle, authorName);
       } catch (e) {
-        console.warn(`TwitterAPI.io failed for ${handle}: ${e}`);
+        if (isCircuitOpenError(e)) {
+          // 12C2: paid circuit open means zero paid calls AND no Nitter fallthrough.
+          throw e;
+        }
+        apiError = e;
+        console.warn(`TwitterAPI.io failed for ${handle}: ${boundTwitterError(e)}`);
         // Fall through to Nitter fallback
       }
     }
 
     // Fallback: Nitter (mostly non-functional as of 2025)
-    return this.fetchTwitterViaNitter(handle, authorName);
+    try {
+      return await this.fetchTwitterViaNitter(handle, authorName);
+    } catch {
+      if (apiError !== undefined) throw apiError;
+      throw new Error(`All Twitter fetch methods failed for ${handle}`);
+    }
   }
 
   private async fetchTwitterViaAPI(handle: string, authorName?: string): Promise<RawContent[]> {
     // Rate limiting for TwitterAPI.io (free tier: 1 req/5s)
-    const now = Date.now();
+    const now = this.nowFn();
     const timeSinceLastCall = now - lastTwitterApiCall;
     if (timeSinceLastCall < TWITTER_API_CONFIG.rateLimitMs) {
       await this.sleep(TWITTER_API_CONFIG.rateLimitMs - timeSinceLastCall);
     }
-    lastTwitterApiCall = Date.now();
+    lastTwitterApiCall = this.nowFn();
 
-    const response = await fetch(
-      `${TWITTER_API_CONFIG.baseUrl}/twitter/user/last_tweets?userName=${encodeURIComponent(handle)}`,
-      {
-        headers: {
-          'X-API-Key': TWITTER_API_CONFIG.apiKey,
-        },
-      }
+    const response = await this.twitterPaidFetch(
+      `${TWITTER_API_CONFIG.baseUrl}/twitter/user/last_tweets?userName=${encodeURIComponent(handle)}`
     );
-
-    if (!response.ok) {
-      throw new Error(`TwitterAPI.io returned ${response.status}: ${await response.text()}`);
-    }
 
     const data = await response.json() as {
       status: string;
@@ -372,7 +660,7 @@ export class AIIntelFetcher {
     };
 
     if (data.status !== 'success' || !data.data?.tweets) {
-      throw new Error(`TwitterAPI.io error: ${JSON.stringify(data)}`);
+      throw new Error(boundTwitterError(`TwitterAPI.io error: ${JSON.stringify(data)}`));
     }
 
     return data.data.tweets
@@ -466,30 +754,19 @@ export class AIIntelFetcher {
 
     for (const handle of handles) {
       // Rate limiting
-      const timeSinceLastCall = Date.now() - lastTwitterApiCall;
+      const timeSinceLastCall = this.nowFn() - lastTwitterApiCall;
       if (timeSinceLastCall < TWITTER_API_CONFIG.rateLimitMs) {
         await this.sleep(TWITTER_API_CONFIG.rateLimitMs - timeSinceLastCall);
       }
-      lastTwitterApiCall = Date.now();
+      lastTwitterApiCall = this.nowFn();
 
       try {
         // Build advanced search query: from:handle since:date until:date
         const query = `from:${handle} since:${sinceStr} until:${untilStr}`;
 
-        const response = await fetch(
-          `${TWITTER_API_CONFIG.baseUrl}/twitter/tweet/advanced_search?query=${encodeURIComponent(query)}&queryType=Latest`,
-          {
-            headers: {
-              'X-API-Key': TWITTER_API_CONFIG.apiKey,
-            },
-          }
+        const response = await this.twitterPaidFetch(
+          `${TWITTER_API_CONFIG.baseUrl}/twitter/tweet/advanced_search?query=${encodeURIComponent(query)}&queryType=Latest`
         );
-
-        if (!response.ok) {
-          console.warn(`Monitor ${handle}: ${response.status}`);
-          results.push({ handle, tweets: [] });
-          continue;
-        }
 
         const data = await response.json() as {
           tweets?: Array<{
@@ -539,7 +816,9 @@ export class AIIntelFetcher {
             for (const tweet of tweets) {
               await this.contentStore.upsert({
                 sourceId: source.id,
-                externalId: tweet.id || `${handle}_${tweet.publishedAt.getTime()}`,
+                externalId: normalizeExternalId(
+                  (tweet.id ?? '').trim() || `${handle}_${tweet.publishedAt.getTime()}`,
+                ),
                 url: tweet.url,
                 contentText: tweet.content,
                 contentType: 'twitter',
@@ -859,7 +1138,56 @@ export class AIIntelFetcher {
   // ============================================================================
   
   private sleep(ms: number): Promise<void> {
+    if (this.sleepOverride) return this.sleepOverride(ms);
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Shared paid-provider request for twitterapi.io (12C2). Bounded transient
+   * retry (3 attempts max, 250/500ms backoff) plus the paid-provider circuit
+   * breaker. Throws TwitterCircuitOpenError without any fetch call while open.
+   */
+  private async twitterPaidFetch(url: string): Promise<Response> {
+    if (this.twitterBreaker.openUntil !== null) {
+      const now = this.nowFn();
+      if (now < this.twitterBreaker.openUntil || this.twitterBreaker.halfOpenInFlight) {
+        throw new TwitterCircuitOpenError(this.twitterBreaker.openUntil);
+      }
+      // Cooldown elapsed: this request is the single half-open probe.
+      this.twitterBreaker.halfOpenInFlight = true;
+    }
+    try {
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < TWITTER_RETRY_CONFIG.maxAttempts; attempt++) {
+        if (attempt > 0) {
+          await this.sleep(TWITTER_RETRY_CONFIG.backoffMs[attempt - 1]);
+        }
+        try {
+          const response = await fetch(url, twitterRequestInit());
+          if (!response.ok) {
+            throw await twitterHttpError(response.status, response);
+          }
+          // Success (including a valid empty payload): close and reset.
+          this.twitterBreaker.exhausted = 0;
+          this.twitterBreaker.openUntil = null;
+          return response;
+        } catch (err) {
+          lastErr = err;
+          if (!isTransientTwitterError(err)) throw err;
+        }
+      }
+      // Transient attempts exhausted: one breaker increment per request.
+      this.twitterBreaker.exhausted += 1;
+      if (
+        this.twitterBreaker.exhausted >= TWITTER_RETRY_CONFIG.breakerOpenThreshold ||
+        this.twitterBreaker.halfOpenInFlight
+      ) {
+        this.twitterBreaker.openUntil = this.nowFn() + TWITTER_RETRY_CONFIG.breakerCooldownMs;
+      }
+      throw lastErr;
+    } finally {
+      this.twitterBreaker.halfOpenInFlight = false;
+    }
   }
 }
 
@@ -867,9 +1195,17 @@ export class AIIntelFetcher {
 // SOURCE SEEDER
 // ============================================================================
 
+function seedActivation(source: object): { isActive?: boolean } {
+  if ('isActive' in source) {
+    return { isActive: (source as { isActive?: boolean }).isActive };
+  }
+  return {};
+}
+
 export async function seedSources(dbUrl: string): Promise<void> {
   const store = new SourceStore(dbUrl);
   let count = 0;
+  try {
 
   // Twitter sources
   for (const source of sourcesData.twitter) {
@@ -878,7 +1214,8 @@ export async function seedSources(dbUrl: string): Promise<void> {
       identifier: source.handle,
       authorName: source.name,
       category: source.category as ContentCategory,
-      fetchFrequencyHours: source.priority === 'high' ? 4 : 6
+      fetchFrequencyHours: source.priority === 'high' ? 4 : 6,
+      ...seedActivation(source),
     });
     count++;
   }
@@ -890,7 +1227,8 @@ export async function seedSources(dbUrl: string): Promise<void> {
       identifier: source.url,
       authorName: source.author,
       category: source.category as ContentCategory,
-      fetchFrequencyHours: source.tier === 1 ? 6 : 12
+      fetchFrequencyHours: source.tier === 1 ? 6 : 12,
+      ...seedActivation(source),
     });
     count++;
   }
@@ -902,7 +1240,8 @@ export async function seedSources(dbUrl: string): Promise<void> {
       identifier: source.id,
       authorName: source.name,
       category: source.category as ContentCategory,
-      fetchFrequencyHours: 24
+      fetchFrequencyHours: 24,
+      ...seedActivation(source),
     });
     count++;
   }
@@ -914,7 +1253,8 @@ export async function seedSources(dbUrl: string): Promise<void> {
       identifier: source.url,
       authorName: source.author,
       category: source.category as ContentCategory,
-      fetchFrequencyHours: 24
+      fetchFrequencyHours: 24,
+      ...seedActivation(source),
     });
     count++;
   }
@@ -926,7 +1266,8 @@ export async function seedSources(dbUrl: string): Promise<void> {
       identifier: source.tag,
       authorName: source.name,
       category: (source.category || 'safety') as ContentCategory,
-      fetchFrequencyHours: 12
+      fetchFrequencyHours: 12,
+      ...seedActivation(source),
     });
     count++;
   }
@@ -938,7 +1279,8 @@ export async function seedSources(dbUrl: string): Promise<void> {
       identifier: source.category,
       authorName: source.name,
       category: 'academic' as ContentCategory,
-      fetchFrequencyHours: 24
+      fetchFrequencyHours: 24,
+      ...seedActivation(source),
     });
     count++;
   }
@@ -950,7 +1292,8 @@ export async function seedSources(dbUrl: string): Promise<void> {
       identifier: source.handle,
       authorName: source.name,
       category: source.category as ContentCategory,
-      fetchFrequencyHours: 6
+      fetchFrequencyHours: 6,
+      ...seedActivation(source),
     });
     count++;
   }
@@ -962,10 +1305,14 @@ export async function seedSources(dbUrl: string): Promise<void> {
       identifier: source.rss,
       authorName: source.name,
       category: source.category as ContentCategory,
-      fetchFrequencyHours: 48
+      fetchFrequencyHours: 48,
+      ...seedActivation(source),
     });
     count++;
   }
 
   console.log(`Sources seeded successfully: ${count} sources added`);
+  } finally {
+    await store.close();
+  }
 }

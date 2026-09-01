@@ -74,9 +74,15 @@ export default async function SettingsPage() {
     },
     {
       label: "Admin Auth",
-      value: process.env.ADMIN_PASSWORD ? "Configured" : "Not Set",
-      description: "Admin authentication status",
-      status: process.env.ADMIN_PASSWORD ? "ok" : "error",
+      value:
+        process.env.ADMIN_PASSWORD && process.env.ADMIN_SESSION_SECRET
+          ? "Configured"
+          : "Not Set",
+      description: "Admin password and session secret status",
+      status:
+        process.env.ADMIN_PASSWORD && process.env.ADMIN_SESSION_SECRET
+          ? "ok"
+          : "error",
     },
     {
       label: "Claude API",

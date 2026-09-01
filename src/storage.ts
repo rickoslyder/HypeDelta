@@ -13,6 +13,13 @@ const { Pool } = pg;
 type PoolType = InstanceType<typeof Pool>;
 type DbClient = pg.PoolClient;
 
+import { applyMigrations } from './migrations/runner';
+import { predictionIdFromClaimId } from './migrations/prediction-id';
+import { normalizeAuthorRole } from './author-side';
+import { normalizeExternalId } from './external-id';
+import { storedTopicFields, normalizeTopic } from './topic-taxonomy';
+import { toCanonicalTopicSynthesis, type TopicSynthesis } from './topic-synthesis';
+
 import type { SourceType, ContentCategory } from './types';
 
 // ============================================================================
@@ -34,6 +41,7 @@ export interface Source {
 export interface Content {
   id?: number;
   sourceId: number;
+  /** Upstream GUID/link, normalized to VARCHAR(255) by ContentStore.upsert. */
   externalId: string;
   url?: string;
   title?: string;
@@ -63,6 +71,8 @@ export interface ExtractedClaim {
   claimText: string;
   claimType: string;
   topic: string;
+  /** Original nonblank source spelling when it differs from canonical topic. */
+  rawTopic?: string | null;
   stance: string;
   bullishness: number;
   confidence: number;
@@ -88,7 +98,7 @@ export interface SynthesisResult {
   id?: number;
   generatedAt: Date;
   lookbackDays: number;
-  syntheses: any[];
+  syntheses: TopicSynthesis[];
   hypeAssessment: any;
   digest?: any;
 }
@@ -101,6 +111,7 @@ export interface Prediction {
   confidence: number;
   timeframe: string;
   topic: string;
+  rawTopic?: string | null;
   madeAt: Date;
   verifiedAt?: Date;
   status?: string;
@@ -114,6 +125,7 @@ export interface Prediction {
 
 class BaseStore {
   protected pool: PoolType;
+  private closing: Promise<void> | null = null;
 
   constructor(connectionString: string) {
     this.pool = new Pool({ connectionString });
@@ -141,9 +153,12 @@ class BaseStore {
     return this.pool.connect();
   }
 
-  /** Close the underlying pool. Safe to call once when a store is done. */
+  /** Close the underlying pool. Idempotent; concurrent callers share one end(). */
   async close(): Promise<void> {
-    await this.pool.end();
+    if (!this.closing) {
+      this.closing = Promise.resolve(this.pool.end()).then(() => undefined);
+    }
+    await this.closing;
   }
 }
 
@@ -152,7 +167,13 @@ class BaseStore {
 // ============================================================================
 
 export class ContentStore extends BaseStore {
+  /**
+   * Final write boundary for content.external_id: trim, preserve <=255
+   * characters, or replace oversized identifiers with sha256:<hex>.
+   * Callers must apply their blank-id fallback before this method.
+   */
   async upsert(content: Content, client?: DbClient): Promise<number> {
+    const externalId = normalizeExternalId(content.externalId);
     const result = await this.queryOne<{ id: number }>(`
       INSERT INTO content (
         source_id, external_id, url, title, content_text, content_html,
@@ -167,7 +188,7 @@ export class ContentStore extends BaseStore {
       RETURNING id
     `, [
       content.sourceId,
-      content.externalId,
+      externalId,
       content.url,
       content.title,
       content.contentText,
@@ -255,25 +276,32 @@ export class ContentStore extends BaseStore {
 export class ClaimStore extends BaseStore {
   async upsert(claim: EnrichedClaim, client?: DbClient): Promise<string> {
     const id = claim.id || this.generateId();
+    const stored = storedTopicFields(claim);
 
     await this.execute(`
       INSERT INTO extracted_claims (
-        id, content_id, claim_text, claim_type, topic, stance,
+        id, content_id, claim_text, claim_type, topic, raw_topic, stance,
         bullishness, confidence, timeframe, target_entity,
         evidence_provided, quoteworthiness, related_to, original_quote,
         author, author_category, source_url, extracted_at, metadata
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), $18)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), $19)
       ON CONFLICT (id) DO UPDATE SET
         claim_text = EXCLUDED.claim_text,
+        topic = EXCLUDED.topic,
+        raw_topic = COALESCE(EXCLUDED.raw_topic, extracted_claims.raw_topic),
         bullishness = EXCLUDED.bullishness,
         confidence = EXCLUDED.confidence,
-        metadata = EXCLUDED.metadata
+        metadata = EXCLUDED.metadata,
+        original_quote = COALESCE(NULLIF(btrim(extracted_claims.original_quote), ''), EXCLUDED.original_quote),
+        source_url = COALESCE(NULLIF(btrim(extracted_claims.source_url), ''), EXCLUDED.source_url),
+        author = COALESCE(NULLIF(btrim(extracted_claims.author), ''), EXCLUDED.author)
     `, [
       id,
       claim.contentId,
       claim.claimText,
       claim.claimType,
-      claim.topic,
+      stored.topic,
+      stored.rawTopic,
       claim.stance,
       claim.bullishness,
       claim.confidence,
@@ -284,7 +312,7 @@ export class ClaimStore extends BaseStore {
       claim.relatedTo,
       claim.originalQuote,
       claim.author,
-      claim.authorCategory,
+      normalizeAuthorRole(claim.authorCategory),
       claim.sourceUrl,
       JSON.stringify({
         relatedClaims: claim.relatedClaims,
@@ -295,6 +323,34 @@ export class ClaimStore extends BaseStore {
     // Store embedding if present
     if (claim.embedding) {
       await this.storeEmbedding(id, claim.claimText, claim.embedding, client);
+    }
+
+    if (claim.claimType === 'prediction') {
+      await this.execute(`
+        INSERT INTO predictions (
+          id, claim_id, text, author, confidence, timeframe,
+          topic, raw_topic, made_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (claim_id) WHERE claim_id IS NOT NULL DO UPDATE SET
+          text = EXCLUDED.text,
+          author = EXCLUDED.author,
+          confidence = EXCLUDED.confidence,
+          timeframe = EXCLUDED.timeframe,
+          topic = EXCLUDED.topic,
+          raw_topic = COALESCE(EXCLUDED.raw_topic, predictions.raw_topic),
+          made_at = COALESCE(EXCLUDED.made_at, predictions.made_at),
+          updated_at = NOW()
+      `, [
+        predictionIdFromClaimId(id),
+        id,
+        claim.claimText,
+        claim.author ?? '',
+        claim.confidence,
+        claim.timeframe ?? '',
+        stored.topic,
+        stored.rawTopic,
+        claim.extractedAt ?? new Date(),
+      ], client);
     }
 
     return id;
@@ -317,7 +373,7 @@ export class ClaimStore extends BaseStore {
 
   async getByTopic(topic: string, days?: number): Promise<ExtractedClaim[]> {
     let sql = `SELECT * FROM extracted_claims WHERE topic = $1`;
-    const params: any[] = [topic];
+    const params: any[] = [normalizeTopic(topic)];
 
     if (days) {
       params.push(Math.max(0, Math.floor(Number(days) || 0)));
@@ -398,7 +454,7 @@ export class ClaimStore extends BaseStore {
 // ============================================================================
 
 export class SynthesisStore extends BaseStore {
-  async save(result: SynthesisResult): Promise<number> {
+  async save(result: Omit<SynthesisResult, 'syntheses'> & { syntheses: readonly unknown[] }): Promise<number> {
     const row = await this.queryOne<{ id: number }>(`
       INSERT INTO synthesis_results (
         generated_at, lookback_days, syntheses, hype_assessment, digest
@@ -407,7 +463,7 @@ export class SynthesisStore extends BaseStore {
     `, [
       result.generatedAt,
       result.lookbackDays,
-      JSON.stringify(result.syntheses),
+      JSON.stringify(result.syntheses.map((item) => toCanonicalTopicSynthesis(item))),
       JSON.stringify(result.hypeAssessment),
       result.digest ? JSON.stringify(result.digest) : null
     ]);
@@ -439,13 +495,22 @@ export class SynthesisStore extends BaseStore {
 export class PredictionTracker extends BaseStore {
   async record(prediction: Prediction): Promise<string> {
     const id = prediction.id || `pred_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const stored = storedTopicFields(prediction);
     
     await this.execute(`
       INSERT INTO predictions (
         id, claim_id, text, author, confidence, timeframe,
-        topic, made_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      ON CONFLICT (id) DO NOTHING
+        topic, raw_topic, made_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      ON CONFLICT (claim_id) WHERE claim_id IS NOT NULL DO UPDATE SET
+        text = EXCLUDED.text,
+        author = EXCLUDED.author,
+        confidence = EXCLUDED.confidence,
+        timeframe = EXCLUDED.timeframe,
+        topic = EXCLUDED.topic,
+        raw_topic = COALESCE(EXCLUDED.raw_topic, predictions.raw_topic),
+        made_at = COALESCE(EXCLUDED.made_at, predictions.made_at),
+        updated_at = NOW()
     `, [
       id,
       prediction.claimId,
@@ -453,7 +518,8 @@ export class PredictionTracker extends BaseStore {
       prediction.author,
       prediction.confidence,
       prediction.timeframe,
-      prediction.topic,
+      stored.topic,
+      stored.rawTopic,
       prediction.madeAt
     ]);
     
@@ -466,7 +532,8 @@ export class PredictionTracker extends BaseStore {
         status = $2,
         accuracy_score = $3,
         evidence = $4,
-        verified_at = NOW()
+        verified_at = NOW(),
+        updated_at = NOW()
       WHERE id = $1
     `, [id, status, accuracyScore, evidence]);
   }
@@ -474,7 +541,7 @@ export class PredictionTracker extends BaseStore {
   async getPending(timeframe?: string): Promise<Prediction[]> {
     let sql = `
       SELECT * FROM predictions
-      WHERE status IS NULL OR status = 'too-early'
+      WHERE status IN ('pending', 'too-early')
     `;
     
     const params: any[] = [];
@@ -519,7 +586,7 @@ export class PredictionTracker extends BaseStore {
         COUNT(*) FILTER (WHERE status = 'verified') as verified,
         COUNT(*) FILTER (WHERE status = 'falsified') as falsified,
         COUNT(*) FILTER (WHERE status = 'partially-verified') as partially_verified,
-        COUNT(*) FILTER (WHERE status IS NULL OR status = 'too-early') as pending,
+        COUNT(*) FILTER (WHERE status IN ('pending', 'too-early')) as pending,
         AVG(accuracy_score) FILTER (WHERE accuracy_score IS NOT NULL) as avg_accuracy
       FROM predictions
       ${whereClause}
@@ -546,12 +613,12 @@ export class SourceStore extends BaseStore {
       INSERT INTO sources (
         type, identifier, author_name, category, tags,
         fetch_frequency_hours, is_active
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ) VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, true))
       ON CONFLICT (type, identifier) DO UPDATE SET
         author_name = EXCLUDED.author_name,
         category = EXCLUDED.category,
         tags = EXCLUDED.tags,
-        is_active = EXCLUDED.is_active
+        is_active = COALESCE($7, sources.is_active)
       RETURNING id
     `, [
       source.type,
@@ -560,7 +627,7 @@ export class SourceStore extends BaseStore {
       source.category,
       source.tags,
       source.fetchFrequencyHours || 24,
-      source.isActive ?? true
+      source.isActive === undefined ? null : source.isActive
     ]);
     
     return row!.id;
@@ -706,9 +773,25 @@ export async function initializeDatabase(
       topic VARCHAR(100),
       made_at TIMESTAMPTZ NOT NULL,
       verified_at TIMESTAMPTZ,
-      status VARCHAR(50),
+      status VARCHAR(50) NOT NULL DEFAULT 'pending',
       accuracy_score FLOAT,
-      evidence TEXT
+      evidence TEXT,
+      due_at TIMESTAMPTZ,
+      next_observable TEXT,
+      next_question TEXT,
+      outcome_summary TEXT,
+      evidence_url TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT predictions_status_check CHECK (
+        status IN (
+          'pending',
+          'too-early',
+          'verified',
+          'falsified',
+          'partially-verified'
+        )
+      )
     );
     
     -- Indexes
@@ -720,7 +803,15 @@ export async function initializeDatabase(
     CREATE INDEX IF NOT EXISTS idx_claims_extracted ON extracted_claims(extracted_at);
     CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status);
     CREATE INDEX IF NOT EXISTS idx_predictions_author ON predictions(author);
+    CREATE INDEX IF NOT EXISTS idx_predictions_claim_id ON predictions(claim_id);
   `);
+
+  // NOTE: idx_predictions_due_at and the predictions_claim_id_unique partial
+  // unique index are intentionally NOT created here. Migrations 001/003 own
+  // them (001 creates idx_predictions_due_at; 003 creates the unique index
+  // after a fail-closed duplicate check). This bootstrap must therefore
+  // ALWAYS end with applyMigrations(pool) below — any future bootstrap-only
+  // path that skips applyMigrations would silently miss those indexes.
 
   // ivfflat supports up to 2000 dimensions. For larger embeddings (e.g.
   // OpenAI text-embedding-3-large at 3072) skip the ANN index; queries still
@@ -736,6 +827,8 @@ export async function initializeDatabase(
       `skipping ANN index (exact search will be used).`
     );
   }
+
+  await applyMigrations(pool);
   } finally {
     await pool.end();
   }

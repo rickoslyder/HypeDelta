@@ -12,6 +12,8 @@ import {
   Database,
   Search,
   Home,
+  ShieldCheck,
+  Target,
 } from "lucide-react";
 
 interface CommandPaletteProps {
@@ -107,6 +109,20 @@ export function CommandPalette({ topics = [] }: CommandPaletteProps) {
               >
                 <MessageSquare className="h-4 w-4" />
                 Claims Browser
+              </Command.Item>
+              <Command.Item
+                onSelect={() => runCommand(() => router.push("/predictions"))}
+                className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent aria-selected:bg-accent"
+              >
+                <Target className="h-4 w-4" />
+                Predictions
+              </Command.Item>
+              <Command.Item
+                onSelect={() => runCommand(() => router.push("/reliability"))}
+                className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent aria-selected:bg-accent"
+              >
+                <ShieldCheck className="h-4 w-4" />
+                Evidence Ledger
               </Command.Item>
               <Command.Item
                 onSelect={() => runCommand(() => router.push("/researchers"))}

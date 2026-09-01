@@ -13,7 +13,7 @@ function LoginForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(
     searchParams.get("error") === "not-configured"
-      ? "Admin access is not configured. Set ADMIN_PASSWORD to enable login."
+      ? "Admin access is not configured. Set ADMIN_PASSWORD and ADMIN_SESSION_SECRET to enable login."
       : ""
   );
 
@@ -33,7 +33,9 @@ function LoginForm() {
         const redirect = searchParams.get("redirect") || "/admin";
         router.push(redirect);
       } else if (response.status === 503) {
-        setError("Admin access is not configured. Set ADMIN_PASSWORD to enable login.");
+        setError(
+          "Admin access is not configured. Set ADMIN_PASSWORD and ADMIN_SESSION_SECRET to enable login.",
+        );
       } else if (response.status === 429) {
         setError("Too many failed attempts. Please wait before trying again.");
       } else {

@@ -2,6 +2,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "@/components/markdown";
 import { getLatestSynthesis, getTopicStats } from "@/lib/db";
+import { FreshnessBanner } from "@/components/freshness-banner";
 import { TrendingUp, TrendingDown, Calendar, AlertCircle } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -14,6 +15,8 @@ export default async function DigestPage() {
 
   if (!synthesis) {
     return (
+      <div>
+        <FreshnessBanner />
       <div className="w-full px-4 md:px-8 lg:px-12 py-8">
         <div className="flex flex-col items-center justify-center min-h-[400px] text-center">
           <AlertCircle className="h-12 w-12 text-muted-foreground mb-4" />
@@ -23,12 +26,15 @@ export default async function DigestPage() {
           </p>
         </div>
       </div>
+      </div>
     );
   }
 
   const hypeAssessment = synthesis.hype_assessment;
 
   return (
+    <div>
+      <FreshnessBanner />
     <div className="w-full px-4 md:px-8 lg:px-12 py-8">
       {/* Header */}
       <div className="mb-8">
@@ -78,14 +84,14 @@ export default async function DigestPage() {
                       <Badge variant="outline" className="mb-2 capitalize">
                         {topicSynthesis.topic}
                       </Badge>
-                      {topicSynthesis.summary && (
-                        <p className="text-sm mb-3">{topicSynthesis.summary}</p>
+                      {(topicSynthesis.summary || topicSynthesis.synthesisNarrative) && (
+                        <p className="text-sm mb-3">{topicSynthesis.summary || topicSynthesis.synthesisNarrative}</p>
                       )}
-                      {topicSynthesis.keyDebates && topicSynthesis.keyDebates.length > 0 && (
+                      {topicSynthesis.disagreements && topicSynthesis.disagreements.length > 0 && (
                         <div className="space-y-2">
-                          {topicSynthesis.keyDebates.map((debate, j) => (
+                          {topicSynthesis.disagreements.map((debate, j) => (
                             <div key={j} className="text-sm">
-                              <p className="text-muted-foreground">{debate.summary}</p>
+                              <p className="text-muted-foreground">{debate.point}</p>
                               {(debate.labPosition || debate.criticPosition) && (
                                 <div className="grid gap-2 md:grid-cols-2 text-xs mt-2">
                                   {debate.labPosition && (
@@ -192,6 +198,7 @@ export default async function DigestPage() {
           </Card>
         </div>
       </div>
+    </div>
     </div>
   );
 }

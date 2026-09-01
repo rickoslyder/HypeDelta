@@ -12,10 +12,14 @@
  */
 
 import { Command } from 'commander';
+import { pathToFileURL } from 'node:url';
 import { AIIntelOrchestrator } from './index';
 import { initializeDatabase, SourceStore, ContentStore, ClaimStore, SynthesisStore, PredictionTracker } from './storage';
+import { runQuoteBackfillCommand, formatQuoteBackfillSummary, createRouterQuoteRecoverer } from './quote-backfill';
 import { getEmbeddingDimension } from './embeddings';
 import { AIIntelFetcher } from './fetcher';
+import { SourceFetchAttemptStore } from './pipeline-ledger';
+import { createProductionModelRuntime, productionModelEnv } from './model-runtime';
 import type { SynthesisOptions, ClaimQuery, Topic } from './types';
 
 // ============================================================================
@@ -34,9 +38,25 @@ const config = {
   projectDir: process.env.PROJECT_DIR || process.cwd(),
   dbUrl: process.env.DATABASE_URL || 'postgresql://localhost/ai_intel',
   embeddingProvider: (process.env.EMBEDDING_PROVIDER || 'ollama') as 'ollama' | 'openai' | 'voyage',
-  useSkills: process.env.USE_SKILLS !== 'false',
-  glmFallback: process.env.GLM_FALLBACK === 'true'
 };
+
+function createInferenceRuntime() {
+  return createProductionModelRuntime({
+    env: productionModelEnv(process.env),
+    dbUrl: config.dbUrl,
+  });
+}
+
+async function withCleanup(
+  resources: Array<{ close: () => Promise<void> }>,
+  fn: () => Promise<void>
+): Promise<void> {
+  try {
+    await fn();
+  } finally {
+    await Promise.all(resources.map((r) => r.close()));
+  }
+}
 
 // ============================================================================
 // COMMANDS
@@ -72,9 +92,13 @@ program
   .option('-a, --all', 'Fetch from all sources')
   .option('--due', 'Only fetch sources due for update')
   .action(async (options) => {
-    const fetcher = new AIIntelFetcher(config);
+    const attemptStore = new SourceFetchAttemptStore(config.dbUrl);
+    const fetcher = new AIIntelFetcher({
+      ...config,
+      sourceFetchAttemptStore: attemptStore,
+    });
     const sourceStore = new SourceStore(config.dbUrl);
-    
+    await withCleanup([fetcher, sourceStore, attemptStore], async () => {
     let sources;
     if (options.due) {
       sources = await sourceStore.getDueForFetch();
@@ -92,13 +116,18 @@ program
     console.log('\n📊 Fetch Results:');
     console.log(`  ✓ Fetched: ${results.successful.length}`);
     console.log(`  ✗ Failed: ${results.failed.length}`);
-    
-    if (results.failed.length > 0) {
-      console.log('\n❌ Failures:');
-      results.failed.forEach(f => {
-        console.log(`  - ${f.source}: ${f.error}`);
-      });
+    const summary = results.summary;
+    if (summary) {
+      console.log(`  success-empty: ${summary.successEmpty}`);
+      console.log(`  success-items: ${summary.successItems}`);
+      console.log(`  persistedRows: ${summary.persistedRows}`);
+      console.log(`  skippedCircuit: ${summary.skippedCircuit}`);
+      const classes = Object.keys(summary.failuresByClass ?? {});
+      if (classes.length > 0) {
+        console.log(`  failuresByClass: ${classes.join(',')}`);
+      }
     }
+    });
   });
 
 program
@@ -107,9 +136,14 @@ program
   .option('-d, --days <number>', 'Process content from last N days', '1')
   .option('-l, --limit <number>', 'Limit number of items to process', '100')
   .action(async (options) => {
-    const orchestrator = new AIIntelOrchestrator(config);
+    const runtime = createInferenceRuntime();
+    const orchestrator = new AIIntelOrchestrator({
+      ...config,
+      agent: runtime.agent,
+      modelAttemptStore: runtime.store,
+    });
     const contentStore = new ContentStore(config.dbUrl);
-    
+    await withCleanup([orchestrator, runtime.store, contentStore], async () => {
     console.log(`Processing unprocessed content from last ${options.days} days...`);
 
     // Get unprocessed content (not already processed)
@@ -132,6 +166,7 @@ program
     console.log(`  ✓ Relevant: ${result.relevant}`);
     console.log(`  📝 Claims extracted: ${result.claimsExtracted}`);
     console.log(`  ⏱  Time: ${(elapsed / 1000).toFixed(1)}s`);
+    });
   });
 
 program
@@ -142,8 +177,13 @@ program
   .option('--no-digest', 'Skip digest generation')
   .option('-o, --output <file>', 'Output digest to file')
   .action(async (options) => {
-    const orchestrator = new AIIntelOrchestrator(config);
-    
+    const runtime = createInferenceRuntime();
+    const orchestrator = new AIIntelOrchestrator({
+      ...config,
+      agent: runtime.agent,
+      modelAttemptStore: runtime.store,
+    });
+    await withCleanup([orchestrator, runtime.store], async () => {
     const synthOptions: SynthesisOptions = {
       lookbackDays: parseInt(options.days),
       topics: options.topics as Topic[] || null,
@@ -191,6 +231,7 @@ program
         console.log('='.repeat(80));
       }
     }
+    });
   });
 
 program
@@ -205,7 +246,7 @@ program
   .option('--json', 'Output as JSON')
   .action(async (topic, options) => {
     const claimStore = new ClaimStore(config.dbUrl);
-    
+    await withCleanup([claimStore], async () => {
     let claims;
     if (topic) {
       claims = await claimStore.getByTopic(topic, parseInt(options.days));
@@ -237,6 +278,7 @@ program
         console.log();
       });
     }
+    });
   });
 
 program
@@ -248,7 +290,9 @@ program
     const claimStore = new ClaimStore(config.dbUrl);
     const synthesisStore = new SynthesisStore(config.dbUrl);
     const predictionTracker = new PredictionTracker(config.dbUrl);
-    
+    await withCleanup(
+      [sourceStore, contentStore, claimStore, synthesisStore, predictionTracker],
+      async () => {
     const sources = await sourceStore.getActive();
     const dueForFetch = await sourceStore.getDueForFetch();
     const recentContent = await contentStore.getRecent(7);
@@ -306,6 +350,7 @@ program
     } else {
       console.log('  No synthesis run yet');
     }
+    });
   });
 
 program
@@ -318,7 +363,7 @@ program
   .option('--falsify <id>', 'Mark prediction as falsified')
   .action(async (options) => {
     const tracker = new PredictionTracker(config.dbUrl);
-    
+    await withCleanup([tracker], async () => {
     if (options.stats) {
       const stats = options.author 
         ? await tracker.getAccuracyStats(options.author)
@@ -360,6 +405,7 @@ program
         'verified': '✓',
         'falsified': '✗',
         'partially-verified': '~',
+        'pending': '⏳',
         'too-early': '⏳',
         'unfalsifiable': '?',
         'ambiguous': '?'
@@ -369,6 +415,7 @@ program
       console.log(`   "${p.text.slice(0, 80)}${p.text.length > 80 ? '...' : ''}"`);
       console.log(`   Made: ${p.madeAt.toISOString().split('T')[0]} | Timeframe: ${p.timeframe} | Confidence: ${(p.confidence * 100).toFixed(0)}%`);
       console.log();
+    });
     });
   });
 
@@ -381,11 +428,18 @@ program
   .option('-o, --output <file>', 'Output to file')
   .action(async (options) => {
     const synthesisStore = new SynthesisStore(config.dbUrl);
-    
+    const resources: Array<{ close: () => Promise<void> }> = [synthesisStore];
+    await withCleanup(resources, async () => {
     let digest;
     
     if (options.generate) {
-      const orchestrator = new AIIntelOrchestrator(config);
+      const runtime = createInferenceRuntime();
+      const orchestrator = new AIIntelOrchestrator({
+        ...config,
+        agent: runtime.agent,
+        modelAttemptStore: runtime.store,
+      });
+      resources.push(orchestrator, runtime.store);
       console.log('Generating digest...');
       const result = await orchestrator.runSynthesis({
         lookbackDays: parseInt(options.days),
@@ -412,10 +466,76 @@ program
     } else {
       console.log(digestContent);
     }
+    });
   });
 
-// ============================================================================
-// RUN
-// ============================================================================
+program
+  .command('backfill-quotes')
+  .description(
+    'Recover exact original_quote spans for existing claims that lack them. Dry-run by default. Limit is unique content items (hard max 100); at most 20 missing-quote claims per content item.',
+  )
+  .requiredOption(
+    '-l, --limit <number>',
+    'Max unique content items to select (1..100). Required even for dry-run.',
+  )
+  .option(
+    '--execute',
+    'Perform provider-backed quote updates (default: dry-run, no provider/DB writes)',
+  )
+  .option(
+    '--retry-failed',
+    'Re-attempt claims whose latest stable receipt is no-match, rejected, or error (still skips successful updates)',
+  )
+  .action(async (options) => {
+    const execute = Boolean(options.execute);
+    const runtime = execute
+      ? createInferenceRuntime()
+      : null;
+    try {
+      const summary = await runQuoteBackfillCommand({
+        connectionString: config.dbUrl,
+        execute,
+        limit: options.limit,
+        retryFailed: Boolean(options.retryFailed),
+        recoverer: runtime ? createRouterQuoteRecoverer(runtime.router) : undefined,
+      });
+      console.log(formatQuoteBackfillSummary(summary));
+    } finally {
+      if (runtime) {
+        await runtime.store.close();
+      }
+    }
+  });
 
-program.parse();
+// ===========================================================================
+// RUN
+// ===========================================================================
+
+function isMainModule(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return import.meta.url === pathToFileURL(entry).href;
+  } catch {
+    return false;
+  }
+}
+
+function safeErrorMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : 'Command failed';
+  if (/postgresql:\/\//i.test(message) || /DATABASE_URL/i.test(message)) {
+    return 'Command failed';
+  }
+  return message;
+}
+
+export async function runCli(argv: string[] = process.argv): Promise<void> {
+  await program.parseAsync(argv);
+}
+
+if (isMainModule()) {
+  runCli().catch((err) => {
+    console.error(safeErrorMessage(err));
+    process.exitCode = 1;
+  });
+}

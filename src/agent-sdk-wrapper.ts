@@ -20,6 +20,39 @@ import {
   type SDKAssistantMessage
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import { groupByAuthorSide } from './author-side';
+import {
+  emptyUnsupportedTopicSynthesis,
+  toCanonicalTopicSynthesis,
+  type TopicSynthesis,
+} from './topic-synthesis';
+import {
+  EXTRACTION_CONTENT_LIMIT,
+  EXTRACTION_CHUNK_SIZE,
+  EXTRACTION_CHUNK_OVERLAP,
+  EXTRACTION_MAX_CHUNKS,
+  EXTRACTION_MAX_TOTAL_CHARS,
+  EXTRACTION_MAX_PROVIDER_CALLS,
+  LiveExtractedClaimSchema,
+  chunkExtractionContent,
+  parseLiveExtractClaimsOutput,
+  mergeAdmittedClaims,
+  buildLiveExtractPrompt,
+  type LiveExtractedClaim,
+} from './extraction';
+
+export {
+  EXTRACTION_CONTENT_LIMIT,
+  EXTRACTION_CHUNK_SIZE,
+  EXTRACTION_CHUNK_OVERLAP,
+  EXTRACTION_MAX_CHUNKS,
+  EXTRACTION_MAX_TOTAL_CHARS,
+  EXTRACTION_MAX_PROVIDER_CALLS,
+  LiveExtractedClaimSchema,
+  chunkExtractionContent,
+  parseLiveExtractClaimsOutput,
+  type LiveExtractedClaim,
+};
 
 // ============================================================================
 // CONFIGURATION
@@ -31,6 +64,7 @@ export interface AIIntelAgentConfig {
   maxTurns?: number;
   maxBudgetUsd?: number;
 }
+
 
 // ============================================================================
 // SUBAGENT DEFINITIONS
@@ -74,7 +108,8 @@ Prioritize speed over depth.`,
     tools: ['Read', 'Grep', 'Glob', 'WebFetch'],
     prompt: `You are a claim extraction specialist for AI research intelligence.
 
-Extract structured claims from content. Each claim should have:
+Extract structured claims from content. Each claim MUST have:
+- contentId: required source content ID from the input
 - claimText: The actual claim in clear language
 - claimType: fact | prediction | hint | opinion | critique
 - topic: Primary topic area
@@ -84,6 +119,7 @@ Extract structured claims from content. Each claim should have:
 - timeframe: near-term | medium-term | long-term | null
 - evidenceProvided: strong | moderate | weak | appeal-to-authority
 - quoteworthiness: 0.0-1.0
+- originalQuote: required exact, non-empty verbatim span copied from that input content (never paraphrase)
 
 Extract MULTIPLE claims per source when warranted.
 Pay special attention to:
@@ -291,71 +327,90 @@ IMPORTANT: Return ONLY valid JSON, no markdown, no explanation. Format:
   }
   
   /**
-   * Extract claims from filtered content
+   * Extract claims from filtered content.
+   * Chunks long bodies with overlap; parses model output through LiveExtractedClaimSchema.
+   * Never logs source bodies.
    */
-  async extractClaims(content: any[]): Promise<any> {
-    // Prepare content with IDs for tracking
-    const contentWithIds = content.slice(0, 10).map((item, idx) => ({
-      idx,
-      contentId: (item as any).id,
-      author: item.author,
-      content: item.content?.slice(0, 1000) || (item as any).content_text?.slice(0, 1000) || '',
-      topic: item.topic,
-      authorCategory: item.authorCategory
-    }));
-
-    const prompt = `You are a claim extractor for AI research content. Extract claims and return ONLY a JSON object.
-
-Content items:
-${JSON.stringify(contentWithIds, null, 2)}
-
-For each claim found, extract:
-- contentId: the source content's ID (from input)
-- claimText: the actual claim in clear language
-- claimType: fact|prediction|hint|opinion|critique
-- topic: from source or inferred
-- stance: bullish|bearish|neutral (on AI progress)
-- bullishness: 0.0-1.0
-- confidence: 0.0-1.0 (how confident author seems)
-- timeframe: near-term|medium-term|long-term|null
-- evidenceProvided: strong|moderate|weak|appeal-to-authority
-- quoteworthiness: 0.0-1.0
-- author: from source
-- authorCategory: from source
-
-Extract MULTIPLE claims per source when warranted. Focus on predictions, research hints, and substantive opinions.
-
-IMPORTANT: Return ONLY valid JSON, no markdown. Format:
-{"claims": [{"contentId": 123, "claimText": "...", "claimType": "prediction", ...}]}`;
-
-    const result = await this.runQuery(prompt, {
-      allowedTools: ['Read'],
-      maxTurns: 5
-    });
-
-    if (!result.success) {
-      return { claims: [] };
+  async extractClaims(content: any[]): Promise<{
+    claims: LiveExtractedClaim[];
+    agentOutputs: number;
+    rejectedClaims: number;
+  }> {
+    const selected = content.slice(0, 10);
+    const allowedContentIds = new Set<number>();
+    for (const item of selected) {
+      const id = (item as any).id;
+      if (typeof id === 'number' && Number.isInteger(id) && id > 0) {
+        allowedContentIds.add(id);
+      }
     }
 
-    return this.parseJsonFromOutput(result.output || '{}');
+    type ChunkJob = {
+      contentId: number;
+      author?: string;
+      topic?: unknown;
+      authorCategory?: unknown;
+      chunk: string;
+    };
+    const jobs: ChunkJob[] = [];
+    for (const item of selected) {
+      const id = (item as any).id;
+      if (typeof id !== 'number' || !allowedContentIds.has(id)) continue;
+      const text = String(item.content ?? (item as any).content_text ?? '');
+      const chunks = chunkExtractionContent(text);
+      for (const chunk of chunks) {
+        if (jobs.length >= EXTRACTION_MAX_PROVIDER_CALLS) break;
+        jobs.push({
+          contentId: id,
+          author: item.author,
+          topic: item.topic,
+          authorCategory: item.authorCategory,
+          chunk,
+        });
+      }
+      if (jobs.length >= EXTRACTION_MAX_PROVIDER_CALLS) break;
+    }
+
+    let agentOutputs = 0;
+    let rejectedClaims = 0;
+    const admitted: LiveExtractedClaim[] = [];
+
+    for (const job of jobs) {
+      const prompt = buildLiveExtractPrompt({
+        contentId: job.contentId,
+        author: job.author,
+        content: job.chunk,
+        topic: job.topic,
+        authorCategory: job.authorCategory,
+      });
+      const result = await this.runQuery(prompt, {
+        allowedTools: ['Read'],
+        maxTurns: 5,
+      });
+      const parsed = parseLiveExtractClaimsOutput(
+        result.success ? result.output : null,
+        new Set([job.contentId]),
+      );
+      agentOutputs += parsed.agentOutputs;
+      rejectedClaims += parsed.rejectedClaims;
+      if (!parsed.failedClosed) {
+        admitted.push(...parsed.claims);
+      }
+    }
+
+    const claims = mergeAdmittedClaims(admitted);
+    rejectedClaims += admitted.length - claims.length;
+    return { claims, agentOutputs, rejectedClaims };
   }
   
   /**
    * Synthesize claims into topic-level insights
    */
-  async synthesize(claims: any[], topic: string): Promise<any> {
-    // Group claims by author category for proper synthesis
-    const labClaims = claims.filter(c =>
-      ['anthropic', 'openai', 'deepmind', 'meta', 'google', 'xai', 'mistral'].includes(c.authorCategory?.toLowerCase()) ||
-      c.authorCategory === 'lab-researcher'
-    );
-    const criticClaims = claims.filter(c =>
-      c.authorCategory === 'critic' || c.authorCategory === 'academic'
-    );
-    const independentClaims = claims.filter(c =>
-      c.authorCategory === 'independent' || !c.authorCategory ||
-      !['anthropic', 'openai', 'deepmind', 'meta', 'google', 'xai', 'mistral', 'critic', 'academic', 'lab-researcher'].includes(c.authorCategory?.toLowerCase())
-    );
+  async synthesize(claims: any[], topic: string): Promise<TopicSynthesis> {
+    const grouped = groupByAuthorSide(claims, (c) => c.authorCategory ?? c.author_category);
+    const labClaims = grouped.lab;
+    const criticClaims = grouped.critic;
+    const independentClaims = grouped.other;
 
     // Calculate sentiment from claims
     const avgBullishness = (arr: any[]) => {
@@ -404,7 +459,8 @@ IMPORTANT: Analyze the actual claim content to identify:
 3. Where they agree (agreements array) - specific points both sides accept
 4. Where they disagree (disagreements array) - structured with point/labPosition/criticPosition
 5. Emerging narratives - new framings appearing in the claims
-6. A synthesisNarrative - 2 paragraphs summarizing the topic
+6. Notable predictions (predictions array) - {text, author, confidence, timeframe}
+7. A synthesisNarrative - 2 paragraphs summarizing the topic
 
 Return ONLY valid JSON matching the topic-synthesis skill output format.`;
 
@@ -415,42 +471,24 @@ Return ONLY valid JSON matching the topic-synthesis skill output format.`;
     });
 
     if (!result.success) {
-      // Return calculated values even on failure
-      return {
-        labConsensus: `Lab researchers (${labClaims.length} claims) discuss ${topic} with ${labSentiment > 0.6 ? 'optimism' : labSentiment < 0.4 ? 'caution' : 'mixed views'}.`,
-        criticConsensus: criticClaims.length > 0
-          ? `Critics (${criticClaims.length} claims) express ${criticSentiment > 0.6 ? 'measured optimism' : criticSentiment < 0.4 ? 'skepticism' : 'nuanced views'}.`
-          : 'Limited critic discourse on this topic.',
-        agreements: [],
-        disagreements: [],
-        emergingNarratives: [],
-        predictions: [],
-        evidenceQuality: 0.5,
-        hypeDelta: {
-          delta: labSentiment - criticSentiment,
-          labSentiment,
-          criticSentiment,
-          interpretation: labSentiment - criticSentiment > 0.2 ? 'Potentially overhyped' :
-                         labSentiment - criticSentiment < -0.2 ? 'Potentially underhyped' : 'Relatively aligned'
-        },
-        synthesisNarrative: `${topic} discourse includes ${claims.length} claims across lab (${labClaims.length}), critic (${criticClaims.length}), and independent (${independentClaims.length}) sources.`
-      };
+      return emptyUnsupportedTopicSynthesis();
     }
 
     const parsed = this.parseJsonFromOutput(result.output || '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || 'raw' in parsed) {
+      return emptyUnsupportedTopicSynthesis();
+    }
 
-    // Ensure hypeDelta has calculated values if not returned
     if (!parsed.hypeDelta || typeof parsed.hypeDelta.delta !== 'number') {
       parsed.hypeDelta = {
         delta: labSentiment - criticSentiment,
         labSentiment,
         criticSentiment,
-        interpretation: labSentiment - criticSentiment > 0.2 ? 'Potentially overhyped' :
-                       labSentiment - criticSentiment < -0.2 ? 'Potentially underhyped' : 'Relatively aligned'
+        confidence: 0,
       };
     }
 
-    return parsed;
+    return toCanonicalTopicSynthesis(parsed, { topic, claimCount: claims.length });
   }
   
   /**

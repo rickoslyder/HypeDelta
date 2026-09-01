@@ -283,7 +283,7 @@ ${syntheses.map(s => `
 - **Lab Consensus**: ${s.labConsensus}
 - **Critic Consensus**: ${s.criticConsensus}
 - **Hype Delta**: ${s.hypeDelta.delta.toFixed(2)} (lab sentiment: ${s.hypeDelta.labSentiment.toFixed(2)}, critic sentiment: ${s.hypeDelta.criticSentiment.toFixed(2)})
-- **Key Disagreements**: ${s.keyDisagreements.map(d => d.point).join('; ')}
+- **Key Disagreements**: ${s.disagreements.map(d => d.point).join('; ')}
 `).join('\n---\n')}
 
 ## Your Task
@@ -345,10 +345,10 @@ ${syntheses.map(s => `
 ${s.synthesisNarrative}
 
 **Notable predictions this week:**
-${s.notablePredictions.map(p => `- ${p.author}: "${p.text}" (confidence: ${p.confidence}, timeframe: ${p.timeframe})`).join('\n')}
+${s.predictions.map(p => `- ${p.author}: "${p.text}" (confidence: ${p.confidence}, timeframe: ${p.timeframe})`).join('\n')}
 
 **Key disagreements:**
-${s.keyDisagreements.map(d => `- ${d.point}`).join('\n')}
+${s.disagreements.map(d => `- ${d.point}`).join('\n')}
 `).join('\n---\n')}
 
 ## Hype Assessment

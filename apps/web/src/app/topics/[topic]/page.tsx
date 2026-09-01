@@ -3,7 +3,9 @@ import { notFound } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
-import { getClaims, getTopicStats } from "@/lib/db";
+import { getClaims, getTopicStats, RESEARCHER_PUBLIC_WINDOW_DAYS } from "@/lib/db";
+import { claimDetailHref, researcherHref } from "@/lib/claim-href";
+import { groupByAuthorSide } from "@hypedelta/author-side";
 import { Calendar, User, ExternalLink, FlaskConical, Users, ArrowRight } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -33,8 +35,8 @@ export default async function TopicPage({ params }: TopicPageProps) {
 
   // Get topic stats and claims
   const [topicStats, claimsResult] = await Promise.all([
-    getTopicStats(30),
-    getClaims({ topic: decodedTopic, days: 30, limit: 50 }),
+    getTopicStats(RESEARCHER_PUBLIC_WINDOW_DAYS),
+    getClaims({ topic: decodedTopic, days: RESEARCHER_PUBLIC_WINDOW_DAYS, limit: 50 }),
   ]);
   const claims = claimsResult.claims;
 
@@ -44,8 +46,10 @@ export default async function TopicPage({ params }: TopicPageProps) {
     notFound();
   }
 
-  const labClaims = claims.filter((c) => c.author_category === "lab-researcher");
-  const criticClaims = claims.filter((c) => c.author_category === "critic");
+  const grouped = groupByAuthorSide(claims, (c) => c.author_category);
+  const labClaims = grouped.lab;
+  const criticClaims = grouped.critic;
+  const otherClaims = grouped.other;
   const bullishness = Number(stats?.avg_bullishness) || 0.5;
 
   return (
@@ -70,12 +74,12 @@ export default async function TopicPage({ params }: TopicPageProps) {
           </Badge>
         </div>
         <p className="text-muted-foreground">
-          {stats?.claim_count || claims.length} claims over the last 30 days
+          {stats?.claim_count || claims.length} claims over the last {RESEARCHER_PUBLIC_WINDOW_DAYS} days
         </p>
       </div>
 
       {/* Stats cards */}
-      <div className="grid gap-4 md:grid-cols-4 mb-8">
+      <div className="grid gap-4 md:grid-cols-5 mb-8">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium">Total Claims</CardTitle>
@@ -108,6 +112,14 @@ export default async function TopicPage({ params }: TopicPageProps) {
         </Card>
         <Card>
           <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">Other</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{stats?.other_count || otherClaims.length}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium">Avg. Sentiment</CardTitle>
           </CardHeader>
           <CardContent>
@@ -121,7 +133,7 @@ export default async function TopicPage({ params }: TopicPageProps) {
       </div>
 
       {/* Claims split by category */}
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-3">
         {/* Lab Researcher Claims */}
         <Card>
           <CardHeader>
@@ -169,6 +181,26 @@ export default async function TopicPage({ params }: TopicPageProps) {
             </div>
           </CardContent>
         </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Other Claims</CardTitle>
+            <CardDescription>
+              Independent, journalist, and unclassified remainder
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {otherClaims.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No other claims on this topic.</p>
+              ) : (
+                otherClaims.slice(0, 10).map((claim) => (
+                  <ClaimItem key={claim.id} claim={claim} />
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       {/* All claims link */}
@@ -191,6 +223,8 @@ interface ClaimItemProps {
     claim_text: string;
     claim_type: string;
     author_handle: string | null;
+    researcher_slug?: string | null;
+    researcher_display_name?: string | null;
     bullishness: number | null;
     extracted_at: string;
     source_url: string | null;
@@ -219,17 +253,25 @@ function ClaimItem({ claim }: ClaimItemProps) {
           </Badge>
         )}
       </div>
-      <p className="text-sm mb-2">{claim.claim_text}</p>
+      <p className="text-sm mb-2">
+        <Link href={claimDetailHref(claim.id)} className="hover:underline">
+          {claim.claim_text}
+        </Link>
+      </p>
       <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-        {claim.author_handle && (
+        {(() => {
+          const slug = claim.researcher_slug || claim.author_handle;
+          if (!slug) return null;
+          return (
           <Link
-            href={`/researchers/${claim.author_handle}`}
+            href={researcherHref(slug)}
             className="flex items-center gap-1 hover:underline"
           >
             <User className="h-3 w-3" />
-            @{claim.author_handle}
+            {claim.researcher_display_name || claim.author_handle}
           </Link>
-        )}
+          );
+        })()}
         <div className="flex items-center gap-1">
           <Calendar className="h-3 w-3" />
           {new Date(claim.extracted_at).toLocaleDateString()}
