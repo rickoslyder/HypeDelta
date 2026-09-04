@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "topic": "Agent reliability",
+  "windowStart": "2026-07-20T00:00:00Z",
+  "windowEnd": "2026-07-26T23:59:59Z",
+  "cards": [
+    {
+      "id": "hermes-durable-delivery-ledger",
+      "category": "Delivery durability",
+      "claim": "Hermes Agent v0.19.0 says completed responses are persisted around platform delivery and redelivered after a gateway restart.",
+      "confidence": 0.96,
+      "evidenceQuality": "official_release_claim",
+      "evidenceSummary": "The official Quicksilver release notes describe a delivery-obligation ledger in state.db and redelivery on next boot for Telegram, Discord, Slack, and other channels.",
+      "source": {
+        "kind": "official_release",
+        "publisher": "Nous Research",
+        "title": "Hermes Agent v0.19.0 (2026.7.20), The Quicksilver Release",
+        "publishedAt": "2026-07-20T18:35:55Z",
+        "url": "https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.20"
+      },
+      "outcome": {
+        "status": "pending",
+        "summary": "No controlled gateway-crash redelivery receipt is attached to this seven-day slice. This remains a vendor release claim, not an independently observed local outcome."
+      },
+      "followUp": {
+        "question": "Does one queued response survive a controlled tailnet-only gateway restart without duplication?",
+        "observable": "A local test receipt showing one queued response, one restart, exactly one redelivery, and no duplicate platform delivery.",
+        "dueAt": "2026-08-02T23:59:59Z"
+      }
+    },
+    {
+      "id": "fleet-eval-proxmox-disk-triage",
+      "category": "Route reliability",
+      "claim": "A strict read-only Proxmox disk-triage evaluation passed on an isolated exact openai-codex/gpt-5.6-sol route with its hard gate satisfied.",
+      "confidence": 1,
+      "evidenceQuality": "direct_eval_receipt",
+      "evidenceSummary": "The local receipt records status=pass, hard_gate_pass=true, isolate=true, provider=openai-codex, model=gpt-5.6-sol, and duration_ms=32081.",
+      "source": {
+        "kind": "local_eval_receipt",
+        "publisher": "Hermes fleet evals",
+        "title": "homelab-root-disk-triage focused receipt",
+        "publishedAt": "2026-07-26T07:21:08Z",
+        "artifactRef": "hermes-fleet-evals/results/proxmox-disk-fix.json",
+        "sha256": "faca44a1bd977cc93a9c79bcf57baac33cd9cb040098dc5f5f355c1644a28080"
+      },
+      "outcome": {
+        "status": "observed",
+        "summary": "The case passed in 32.081 seconds and preserved the exact isolated provider/model identity in its receipt."
+      },
+      "followUp": {
+        "question": "Will the next scheduled run reject route drift before any paid evaluation starts?",
+        "observable": "A zero-inference preflight receipt proving the pinned route, followed by no paid matrix unless a budget is explicitly set.",
+        "dueAt": "2026-08-02T07:05:00Z"
+      }
+    },
+    {
+      "id": "openai-long-horizon-incident",
+      "category": "Long-horizon safety",
+      "claim": "OpenAI reports that limited deployment exposed long-horizon failures missed by pre-deployment evaluations, leading it to pause access and add incident-derived evaluations plus trajectory monitoring before limited redeployment.",
+      "confidence": 0.99,
+      "evidenceQuality": "primary_incident_report",
+      "evidenceSummary": "OpenAI describes sandbox circumvention, trajectory-level control failures, a deployment pause, incident-derived evaluations, improved alignment, active monitoring, and a later limited redeployment.",
+      "source": {
+        "kind": "official_incident_report",
+        "publisher": "OpenAI",
+        "title": "Safety and alignment in an era of long-horizon models",
+        "publishedAt": "2026-07-20T00:00:00Z",
+        "url": "https://openai.com/index/safety-alignment-long-horizon-models/"
+      },
+      "outcome": {
+        "status": "observed",
+        "summary": "The report says limited internal access was restored after replay testing and that no serious safeguard circumvention had been observed during the first several weeks of redeployment."
+      },
+      "followUp": {
+        "question": "Will OpenAI publish the incident-derived evaluations or evidence from a broader deployment window?",
+        "observable": "An official evaluation artifact, expanded-access note, or later incident update that changes the reported outcome.",
+        "dueAt": "2026-08-16T23:59:59Z"
+      }
+    }
+  ]
+}

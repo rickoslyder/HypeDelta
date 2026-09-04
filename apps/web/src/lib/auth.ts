@@ -2,10 +2,11 @@
  * Token-based authentication utilities.
  *
  * Uses the Web Crypto API (crypto.subtle) so it runs in the Edge runtime
- * (middleware) as well as the Node runtime (route handlers).
+ * (proxy) as well as the Node runtime (route handlers).
  *
- * Tokens are signed with HMAC-SHA256 keyed by ADMIN_PASSWORD and never
- * contain the password itself. Token format:
+ * Tokens are signed with HMAC-SHA256 keyed by ADMIN_SESSION_SECRET and never
+ * contain the password itself. ADMIN_PASSWORD is only the login credential.
+ * Token format:
  *   version:timestamp:random:signature
  */
 
@@ -138,14 +139,32 @@ export async function verifyAdminPassword(password: string): Promise<boolean> {
 }
 
 /**
+ * True when both the login credential and the independent session-signing
+ * secret are non-empty. Never falls back from session secret to password.
+ */
+export function isAdminAuthConfigured(): boolean {
+  const password = process.env.ADMIN_PASSWORD;
+  const sessionSecret = process.env.ADMIN_SESSION_SECRET;
+  return Boolean(password && sessionSecret);
+}
+
+/**
+ * Session HMAC key. Independent of ADMIN_PASSWORD; empty/missing => undefined.
+ */
+export function getAdminSessionSecret(): string | undefined {
+  const secret = process.env.ADMIN_SESSION_SECRET;
+  return secret ? secret : undefined;
+}
+
+/**
  * Validate the `admin-auth` cookie on an incoming request.
  *
- * Fails closed: returns false when ADMIN_PASSWORD is not configured or the
- * cookie is missing/invalid. Use this in route handlers as defense-in-depth
- * alongside the middleware gate.
+ * Fails closed: returns false when ADMIN_SESSION_SECRET is not configured or
+ * the cookie is missing/invalid. Use this in route handlers as defense-in-depth
+ * alongside the proxy gate.
  */
 export async function isAuthenticatedRequest(request: NextRequest): Promise<boolean> {
-  const secret = process.env.ADMIN_PASSWORD;
+  const secret = getAdminSessionSecret();
   if (!secret) return false;
 
   // Next.js already decodes cookie values; our token is plain [0-9a-f:] so no

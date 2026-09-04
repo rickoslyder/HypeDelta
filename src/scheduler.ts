@@ -10,14 +10,23 @@
  */
 
 import { pathToFileURL } from 'node:url';
+import { join } from 'node:path';
 import { AIIntelOrchestrator } from './index';
 import { AIIntelFetcher } from './fetcher';
-import { SourceStore, ContentStore } from './storage';
+import { SourceStore, ContentStore, initializeDatabase } from './storage';
 import {
   startHeartbeat,
   type HeartbeatHandle,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
 } from './worker-heartbeat';
+import { classifyPipelineError, sanitizeJsonbPayload } from './pipeline-error';
+import {
+  PipelineRunStore,
+  SourceFetchAttemptStore,
+  type PipelineRunRecordInput,
+  type SourceFetchAttemptInput,
+} from './pipeline-ledger';
+import { createProductionModelRuntime, productionModelEnv } from './model-runtime';
 
 // ============================================================================
 // CONFIGURATION
@@ -27,6 +36,8 @@ const DEFAULT_LOOKBACK_DAYS = 30;
 const DEFAULT_BATCH_LIMIT = 50;
 const MAX_BATCH_LIMIT = 500;
 const MAX_LOOKBACK_DAYS = 365;
+/** Bound only ledger record/close — task fn execution stays unbounded. */
+export const DEFAULT_LEDGER_RECORD_TIMEOUT_MS = 5_000;
 
 export interface ProcessingConfig {
   lookbackDays: number;
@@ -66,6 +77,25 @@ export function shouldRunInitialCycle(
   return env.WORKER_RUN_INITIAL_CYCLE !== 'false';
 }
 
+/**
+ * Next future Sunday 09:00 local. Same calendar Sunday only when `now` is
+ * strictly before 09:00; at or after 09:00 on Sunday, returns seven days later.
+ */
+export function nextSundayDigestAt(now: Date = new Date()): Date {
+  const next = new Date(now.getTime());
+  const day = next.getDay();
+  next.setHours(9, 0, 0, 0);
+  const daysUntilSunday = (7 - day) % 7;
+  if (daysUntilSunday === 0) {
+    if (now.getTime() >= next.getTime()) {
+      next.setDate(next.getDate() + 7);
+    }
+  } else {
+    next.setDate(next.getDate() + daysUntilSunday);
+  }
+  return next;
+}
+
 function parseBoundedInt(
   raw: string | undefined,
   fallback: number,
@@ -85,8 +115,6 @@ const baseConfig = {
   projectDir: process.env.PROJECT_DIR || process.cwd(),
   dbUrl: process.env.DATABASE_URL || 'postgresql://localhost/ai_intel',
   embeddingProvider: (process.env.EMBEDDING_PROVIDER || 'ollama') as 'ollama' | 'openai' | 'voyage',
-  useSkills: process.env.USE_SKILLS !== 'false',
-  glmFallback: process.env.GLM_FALLBACK === 'true'
 };
 
 // Schedule configuration (in milliseconds)
@@ -130,11 +158,118 @@ export interface SchedulerDeps {
   heartbeatIntervalMs?: number;
   /** Override initial-cycle decision (defaults to shouldRunInitialCycle()). */
   runInitialCycle?: boolean;
+  /**
+   * Injected pipeline_runs writer. Never constructed in the class constructor
+   * (avoids a real pg Pool in unit tests). Production entrypoint injects one.
+   */
+  pipelineRunStore?: {
+    record(input: PipelineRunRecordInput): Promise<unknown>;
+    close?: () => Promise<void>;
+  };
+  /**
+   * Injected source_fetch_attempts writer. Production entrypoint constructs one
+   * and passes it into the default fetcher. Never constructed in this class.
+   */
+  sourceFetchAttemptStore?: {
+    record(input: SourceFetchAttemptInput): Promise<number>;
+    close?: () => Promise<void>;
+  };
+  /**
+   * Injected model_attempts writer. Production entrypoint constructs one
+   * PostgresModelAttemptStore and injects it here and into the orchestrator.
+   */
+  modelAttemptStore?: {
+    record?(input: unknown): Promise<number>;
+    close?: () => Promise<void>;
+  };
+  /** Bound for pipelineRunStore.record and optional store.close (task fn stays unbounded). */
+  ledgerTimeoutMs?: number;
+  /** Injected process exit (tests); production defaults to process.exit. */
+  exitFn?: (code?: number) => void;
+  /** Injected clock for receipts / duration_ms. */
+  now?: () => Date;
+  /** Override weekly-digest write directory (tests inject a temp path). */
+  digestDir?: string;
 }
 
 // ============================================================================
 // SCHEDULER CLASS
 // ============================================================================
+
+export interface SchedulerTaskResult {
+  ok: boolean;
+  counts: Record<string, unknown>;
+  error?: unknown;
+}
+
+function isSchedulerTaskResult(value: unknown): value is SchedulerTaskResult {
+  if (value == null || typeof value !== 'object') return false;
+  const rec = value as { ok?: unknown; counts?: unknown };
+  return typeof rec.ok === 'boolean' && rec.counts != null && typeof rec.counts === 'object';
+}
+
+type FetchFailureLike = { errorClass?: string };
+
+type FetchResultLike = {
+  successful: unknown[];
+  failed: FetchFailureLike[];
+  summary?: {
+    successEmpty: number;
+    successItems: number;
+    failed: number;
+    persistedRows: number;
+    failuresByClass: Record<string, number>;
+    skippedCircuit: number;
+  };
+};
+
+function representativeClassifiedError(errorClass: string | undefined): unknown {
+  switch (errorClass) {
+    case 'dns':
+      return { code: 'ENOTFOUND' };
+    case 'timeout':
+      return { code: 'ETIMEDOUT' };
+    case 'rate_limit':
+      return { status: 429 };
+    case 'auth':
+      return { status: 401 };
+    case 'http_4xx':
+      return { status: 400 };
+    case 'http_5xx':
+      return { status: 500 };
+    case 'parse':
+      return { name: 'SyntaxError', message: 'invalid json' };
+    case 'database':
+      return { message: 'database' };
+    case 'provider':
+      return { message: 'provider' };
+    case 'internal':
+      return new Error('internal');
+    default:
+      return { message: errorClass || 'unknown' };
+  }
+}
+
+function toFetchTaskResult(results: FetchResultLike): SchedulerTaskResult {
+  const fetched = results.successful.length;
+  const failed = results.failed.length;
+  const summary = results.summary;
+  const counts: Record<string, unknown> = {
+    fetched,
+    failed,
+    persistedRows: summary?.persistedRows ?? 0,
+    successEmpty: summary?.successEmpty ?? 0,
+    successItems: summary?.successItems ?? 0,
+    skippedCircuit: summary?.skippedCircuit ?? 0,
+    failuresByClass: summary?.failuresByClass ?? {},
+  };
+  const ok = failed === 0 || fetched > 0;
+  return {
+    ok,
+    counts,
+    error: ok ? undefined : representativeClassifiedError(results.failed[0]?.errorClass),
+  };
+}
 
 export class AIIntelScheduler {
   private orchestrator: AIIntelOrchestrator;
@@ -153,10 +288,30 @@ export class AIIntelScheduler {
   private heartbeatIntervalMs: number;
   private runInitialCycle: boolean;
   private heartbeat: HeartbeatHandle | null = null;
+  private pipelineRunStore?: {
+    record(input: PipelineRunRecordInput): Promise<unknown>;
+    close?: () => Promise<void>;
+  };
+  private sourceFetchAttemptStore?: {
+    record(input: SourceFetchAttemptInput): Promise<number>;
+    close?: () => Promise<void>;
+  };
+  private modelAttemptStore?: {
+    record?(input: unknown): Promise<number>;
+    close?: () => Promise<void>;
+  };
+  private ledgerTimeoutMs: number;
+  private exitFn: (code?: number) => void;
+  private stopPromise: Promise<void> | null = null;
+  private now: () => Date;
+  private digestDir: string;
 
   constructor(deps: SchedulerDeps = {}) {
     this.orchestrator = deps.orchestrator ?? new AIIntelOrchestrator(baseConfig);
-    this.fetcher = deps.fetcher ?? new AIIntelFetcher(baseConfig);
+    this.fetcher = deps.fetcher ?? new AIIntelFetcher({
+      ...baseConfig,
+      sourceFetchAttemptStore: deps.sourceFetchAttemptStore,
+    });
     this.sourceStore = deps.sourceStore ?? new SourceStore(baseConfig.dbUrl);
     this.contentStore = deps.contentStore ?? new ContentStore(baseConfig.dbUrl);
     this.processingConfig = deps.processingConfig ?? resolveProcessingConfig();
@@ -168,22 +323,49 @@ export class AIIntelScheduler {
     this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
     this.runInitialCycle =
       deps.runInitialCycle ?? shouldRunInitialCycle();
+    this.pipelineRunStore = deps.pipelineRunStore;
+    this.sourceFetchAttemptStore = deps.sourceFetchAttemptStore;
+    this.modelAttemptStore = deps.modelAttemptStore;
+    this.ledgerTimeoutMs = deps.ledgerTimeoutMs ?? DEFAULT_LEDGER_RECORD_TIMEOUT_MS;
+    this.exitFn = deps.exitFn ?? ((code?: number) => {
+      process.exit(code ?? 0);
+    });
+    this.now = deps.now ?? (() => new Date());
+    this.digestDir = deps.digestDir ?? 'data/digests';
   }
 
   async start(): Promise<void> {
     console.log('🚀 AI Intelligence Scheduler starting...');
 
-    // Immediate heartbeat before any initial work (incl. initialize / fetch).
+    const startedAt = this.now();
+    // Immediate starting heartbeat before any initial work (incl. initialize / fetch).
     this.heartbeat = startHeartbeat({
       path: this.heartbeatPath,
       intervalMs: this.heartbeatIntervalMs,
       setIntervalFn: this.setIntervalFn,
       clearIntervalFn: this.clearIntervalFn,
+      now: this.now,
     });
 
-    // Initialize orchestrator (creates skills/agents)
-    await this.orchestrator.initialize();
+    try {
+      // Bootstrap + versioned migrations before any store query.
+      await initializeDatabase(baseConfig.dbUrl);
 
+      // Initialize orchestrator (creates skills/agents)
+      await this.orchestrator.initialize();
+    } catch (err) {
+      this.heartbeat.markFailed(classifyPipelineError(err));
+      await this.recordPipelineRun({
+        taskName: 'startup',
+        startedAt,
+        finishedAt: this.now(),
+        ok: false,
+        error: err,
+      });
+      throw err;
+    }
+
+    this.heartbeat.markRunning();
     this.running = true;
 
     // Schedule all tasks
@@ -212,11 +394,21 @@ export class AIIntelScheduler {
     console.log('✅ Scheduler running. Press Ctrl+C to stop.');
 
     // Handle shutdown gracefully
-    process.on('SIGINT', () => this.stop());
-    process.on('SIGTERM', () => this.stop());
+    process.on('SIGINT', () => {
+      void this.stop();
+    });
+    process.on('SIGTERM', () => {
+      void this.stop();
+    });
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    this.stopPromise = this.stopOnce();
+    return this.stopPromise;
+  }
+
+  private async stopOnce(): Promise<void> {
     console.log('\n🛑 Stopping scheduler...');
     this.running = false;
 
@@ -236,7 +428,23 @@ export class AIIntelScheduler {
     }
     this.timers.clear();
 
-    process.exit(0);
+    await Promise.all([
+      this.safeCloseStore(this.pipelineRunStore),
+      this.safeCloseStore(this.sourceFetchAttemptStore),
+      this.safeCloseStore(this.modelAttemptStore),
+    ]);
+    this.exitFn(0);
+  }
+
+  private async safeCloseStore(store?: { close?: () => Promise<void> }): Promise<void> {
+    if (store && typeof store.close === 'function') {
+      try {
+        // Bound wait only — does not cancel the underlying close/PG promise.
+        await this.withLedgerTimeout(store.close());
+      } catch {
+        console.error('Scheduler store close failed');
+      }
+    }
   }
 
   // ============================================================================
@@ -247,24 +455,108 @@ export class AIIntelScheduler {
    * Run a named scheduled task with single-flight protection and bounded errors.
    * A second tick while the same name is in flight is skipped (not queued).
    * Failures log a generic message (no env/prompt/content/token leakage) and
-   * do not kill the worker.
+   * do not kill the worker. Every executed run records exactly one pipeline_runs
+   * receipt and emits one bounded completion JSON line.
    */
-  async runTask(name: string, fn: () => Promise<void>): Promise<void> {
+  async runTask(
+    name: string,
+    fn: () => Promise<SchedulerTaskResult | Record<string, unknown> | void>,
+  ): Promise<void> {
     if (this.inFlight.has(name)) {
       console.log(`  ⏭  Skipping ${name}: previous run still in flight`);
       return;
     }
 
     this.inFlight.add(name);
+    const startedAt = this.now();
+    let ok = true;
+    let error: unknown;
+    let counts: Record<string, unknown> = {};
     try {
-      await fn();
-    } catch {
+      const result = await fn();
+      if (isSchedulerTaskResult(result)) {
+        ok = result.ok;
+        counts = result.counts;
+        error = result.error;
+      } else if (result && typeof result === 'object') {
+        counts = result;
+      }
+      if (ok) {
+        this.heartbeat?.recordSuccess(name);
+      } else {
+        this.heartbeat?.recordFailure(name, classifyPipelineError(error));
+        console.error(`Scheduler task failed: ${name}`);
+      }
+    } catch (err) {
+      ok = false;
+      error = err;
+      this.heartbeat?.recordFailure(name, classifyPipelineError(err));
       // Generic bounded error — never echo raw exception text (may contain
       // secrets, prompts, content bodies, DB URLs, tokens).
       console.error(`Scheduler task failed: ${name}`);
     } finally {
       this.inFlight.delete(name);
     }
+    const finishedAt = this.now();
+    this.emitCompletionLine(name, ok, error, startedAt, finishedAt, counts);
+    await this.recordPipelineRun({
+      taskName: name,
+      startedAt,
+      finishedAt,
+      ok,
+      error: ok ? undefined : error,
+      counts,
+    });
+  }
+
+  /**
+   * Bound wait for ledger record/close. Does not cancel the underlying
+   * Postgres promise; late settle is ignored after timeout. Timeout handles
+   * are not added to `this.timers`.
+   */
+  private withLedgerTimeout<T>(promise: Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = this.setTimeoutFn(() => {
+        reject(new Error('ledger timeout'));
+      }, this.ledgerTimeoutMs);
+      promise.then(
+        (value) => {
+          this.clearTimeoutFn(timer);
+          resolve(value);
+        },
+        (err: unknown) => {
+          this.clearTimeoutFn(timer);
+          reject(err);
+        },
+      );
+    });
+  }
+
+  private async recordPipelineRun(input: PipelineRunRecordInput): Promise<void> {
+    if (!this.pipelineRunStore) return;
+    try {
+      await this.withLedgerTimeout(this.pipelineRunStore.record(input));
+    } catch {
+      console.error('Scheduler ledger write failed');
+    }
+  }
+
+  private emitCompletionLine(
+    task: string,
+    ok: boolean,
+    error: unknown,
+    startedAt: Date,
+    finishedAt: Date,
+    counts: Record<string, unknown>,
+  ): void {
+    const payload = {
+      task,
+      ok,
+      error_class: ok ? null : classifyPipelineError(error),
+      duration_ms: Math.max(0, finishedAt.getTime() - startedAt.getTime()),
+      counts: sanitizeJsonbPayload(counts),
+    };
+    console.log(JSON.stringify(payload));
   }
 
   // ============================================================================
@@ -302,13 +594,8 @@ export class AIIntelScheduler {
   }
 
   private scheduleWeeklyDigest(): void {
-    // Calculate time until next Sunday midnight
     const now = new Date();
-    const daysUntilSunday = (7 - now.getDay()) % 7;
-    const nextSunday = new Date(now);
-    nextSunday.setDate(now.getDate() + daysUntilSunday);
-    nextSunday.setHours(9, 0, 0, 0); // 9 AM Sunday
-
+    const nextSunday = nextSundayDigestAt(now);
     const msUntilNextSunday = nextSunday.getTime() - now.getTime();
 
     // Retain the initial timeout handle so stop() can clear it before first fire.
@@ -340,7 +627,7 @@ export class AIIntelScheduler {
   // TASK IMPLEMENTATIONS
   // ============================================================================
 
-  private async runAllFetches(): Promise<void> {
+  private async runAllFetches(): Promise<SchedulerTaskResult> {
     const sources = await this.sourceStore.getDueForFetch();
     console.log(`📡 Fetching ${sources.length} due sources...`);
 
@@ -358,18 +645,20 @@ export class AIIntelScheduler {
         console.log(`    - ${safeSource}`);
       }
     }
+    return toFetchTaskResult(results);
   }
 
-  private async runFetch(sourceType: string): Promise<void> {
+  private async runFetch(sourceType: string): Promise<SchedulerTaskResult> {
     console.log(`📡 [${new Date().toISOString()}] Fetching ${sourceType}...`);
 
     const sources = await this.sourceStore.getByType(sourceType);
     const results = await this.fetcher.fetchSources(sources);
 
     console.log(`  ✓ ${sourceType}: ${results.successful.length} fetched, ${results.failed.length} failed`);
+    return toFetchTaskResult(results);
   }
 
-  private async runProcessing(): Promise<void> {
+  private async runProcessing(): Promise<Record<string, number>> {
     console.log(`⚙️  [${new Date().toISOString()}] Processing content...`);
 
     const { lookbackDays, batchLimit } = this.processingConfig;
@@ -377,15 +666,20 @@ export class AIIntelScheduler {
 
     if (content.length === 0) {
       console.log('  ℹ️  No new content to process');
-      return;
+      return { processed: 0, relevant: 0, claimsExtracted: 0 };
     }
 
     const result = await this.orchestrator.processBatch(content as any);
 
     console.log(`  ✓ Processed: ${result.processed}, Relevant: ${result.relevant}, Claims: ${result.claimsExtracted}`);
+    return {
+      processed: result.processed,
+      relevant: result.relevant,
+      claimsExtracted: result.claimsExtracted,
+    };
   }
 
-  private async runSynthesis(): Promise<void> {
+  private async runSynthesis(): Promise<Record<string, number>> {
     console.log(`🔬 [${new Date().toISOString()}] Running synthesis...`);
 
     const result = await this.orchestrator.runSynthesis({
@@ -394,9 +688,10 @@ export class AIIntelScheduler {
     });
 
     console.log(`  ✓ Synthesized ${result.syntheses.length} topics`);
+    return { topics: result.syntheses.length };
   }
 
-  private async runWeeklyDigest(): Promise<void> {
+  private async runWeeklyDigest(): Promise<Record<string, unknown>> {
     console.log(`📝 [${new Date().toISOString()}] Generating weekly digest...`);
 
     const result = await this.orchestrator.runSynthesis({
@@ -405,17 +700,27 @@ export class AIIntelScheduler {
     });
 
     if (result.digest) {
-      // Save digest to file
+      // Save digest to file (injectable dir so tests never write into the repo)
       const fs = await import('fs/promises');
       const weekNumber = getWeekNumber(new Date());
-      const filename = `data/digests/${new Date().getFullYear()}-W${weekNumber}.md`;
-      const digestContent = result.digest;
+      const filename = join(
+        this.digestDir,
+        `${new Date().getFullYear()}-W${weekNumber}.md`,
+      );
+      const digestContent =
+        typeof result.digest === 'string'
+          ? result.digest
+          : JSON.stringify(result.digest);
 
-      await fs.mkdir('data/digests', { recursive: true });
+      await fs.mkdir(this.digestDir, { recursive: true });
       await fs.writeFile(filename, digestContent);
 
       console.log(`  ✓ Digest saved to ${filename}`);
     }
+    return {
+      topics: result.syntheses.length,
+      digestWritten: Boolean(result.digest),
+    };
   }
 }
 
@@ -446,7 +751,21 @@ function isMainModule(): boolean {
 // ============================================================================
 
 if (isMainModule()) {
-  const scheduler = new AIIntelScheduler();
+  const runtime = createProductionModelRuntime({
+    env: productionModelEnv(process.env),
+    dbUrl: baseConfig.dbUrl,
+  });
+  const attemptStore = new SourceFetchAttemptStore(baseConfig.dbUrl);
+  const scheduler = new AIIntelScheduler({
+    orchestrator: new AIIntelOrchestrator({
+      ...baseConfig,
+      agent: runtime.agent,
+      modelAttemptStore: runtime.store,
+    }),
+    pipelineRunStore: new PipelineRunStore(baseConfig.dbUrl),
+    sourceFetchAttemptStore: attemptStore,
+    modelAttemptStore: runtime.store,
+  });
   scheduler.start().catch(err => {
     console.error('Fatal error during scheduler startup');
     // Startup/init failure remains fatal; still avoid dumping raw secrets.

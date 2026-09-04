@@ -21,40 +21,34 @@ export const metadata: Metadata = {
   description: "Weekly AI research intelligence aggregation and synthesis",
 };
 
+const primaryLinks = [
+  { href: "/digest", label: "Digest" },
+  { href: "/topics", label: "Topics" },
+  { href: "/claims", label: "Claims" },
+  { href: "/predictions", label: "Predictions" },
+  { href: "/reliability", label: "Reliability" },
+  { href: "/researchers", label: "Researchers" },
+];
+
 function Header() {
   return (
     <header className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="flex h-14 w-full items-center px-4 md:px-8 lg:px-12">
-        <Link href="/" className="mr-6 flex items-center space-x-2">
+        <Link href="/" className="mr-4 flex shrink-0 items-center lg:mr-6">
           <span className="font-bold text-xl">HypeDelta</span>
         </Link>
-        <nav className="flex items-center gap-6 text-sm">
-          <Link
-            href="/digest"
-            className="text-foreground/60 transition-colors hover:text-foreground"
-          >
-            Digest
-          </Link>
-          <Link
-            href="/topics"
-            className="text-foreground/60 transition-colors hover:text-foreground"
-          >
-            Topics
-          </Link>
-          <Link
-            href="/claims"
-            className="text-foreground/60 transition-colors hover:text-foreground"
-          >
-            Claims
-          </Link>
-          <Link
-            href="/researchers"
-            className="text-foreground/60 transition-colors hover:text-foreground"
-          >
-            Researchers
-          </Link>
+        <nav aria-label="Primary" className="hidden items-center gap-6 text-sm lg:flex">
+          {primaryLinks.map((link) => (
+            <Link
+              key={link.href}
+              href={link.href}
+              className="text-foreground/60 transition-colors hover:text-foreground"
+            >
+              {link.label}
+            </Link>
+          ))}
         </nav>
-        <div className="flex flex-1 items-center justify-end gap-2">
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
           <CommandPalette
             topics={["agents", "scaling", "reasoning", "safety", "multimodal", "robotics", "rlhf", "interpretability"]}
           />
@@ -67,6 +61,20 @@ function Header() {
           </Link>
         </div>
       </div>
+      <nav
+        aria-label="Primary mobile"
+        className="flex gap-5 overflow-x-auto border-t px-4 py-2.5 text-sm lg:hidden md:px-8"
+      >
+        {primaryLinks.map((link) => (
+          <Link
+            key={link.href}
+            href={link.href}
+            className="shrink-0 whitespace-nowrap text-foreground/65 transition-colors hover:text-foreground"
+          >
+            {link.label}
+          </Link>
+        ))}
+      </nav>
     </header>
   );
 }
@@ -88,7 +96,6 @@ export default function RootLayout({
             <footer className="border-t py-6 md:py-0">
               <div className="flex h-14 w-full items-center justify-between px-4 md:px-8 lg:px-12 text-sm text-muted-foreground">
                 <p>HypeDelta - AI Research Intelligence</p>
-                <p>Updated weekly</p>
               </div>
             </footer>
           </div>

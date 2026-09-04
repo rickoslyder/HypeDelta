@@ -3,6 +3,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { ExpandableText } from "@/components/expandable-text";
 import { getSystemStatus, getTopicStats, getLatestSynthesis } from "@/lib/db";
+import { FreshnessBanner } from "@/components/freshness-banner";
+import { claimsTopicHref } from "@/lib/claim-href";
 import { ArrowRight, TrendingUp, TrendingDown, Activity, FileText, Users, Database } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -22,6 +24,8 @@ export default async function HomePage() {
   } | null;
 
   return (
+    <div>
+      <FreshnessBanner />
     <div className="w-full px-4 md:px-8 lg:px-12 py-8">
       {/* Hero Section */}
       <div className="flex flex-col items-center text-center mb-12">
@@ -57,6 +61,9 @@ export default async function HomePage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{status.claims.total.toLocaleString()}</div>
+            <p className="text-xs text-muted-foreground">
+              Quotes {status.claims.quote_backed}/{status.claims.total}
+            </p>
             <p className="text-xs text-muted-foreground">
               +{status.claims.last_24h} in last 24h
             </p>
@@ -165,7 +172,9 @@ export default async function HomePage() {
                 <div className="space-y-2">
                   {hypeAssessment?.overhyped?.slice(0, 3).map((item) => (
                     <div key={item.topic} className="flex items-start gap-2 p-2 rounded bg-red-50 dark:bg-red-950/30">
-                      <Badge variant="outline" className="capitalize flex-shrink-0">{item.topic}</Badge>
+                      <Link href={claimsTopicHref(item.topic, synthesis?.lookback_days ?? 14)}>
+                        <Badge variant="outline" className="capitalize flex-shrink-0">{item.topic}</Badge>
+                      </Link>
                       <ExpandableText
                         text={item.reason || ""}
                         maxLength={60}
@@ -187,7 +196,9 @@ export default async function HomePage() {
                 <div className="space-y-2">
                   {hypeAssessment?.underhyped?.slice(0, 3).map((item) => (
                     <div key={item.topic} className="flex items-start gap-2 p-2 rounded bg-green-50 dark:bg-green-950/30">
-                      <Badge variant="outline" className="capitalize flex-shrink-0">{item.topic}</Badge>
+                      <Link href={claimsTopicHref(item.topic, synthesis?.lookback_days ?? 14)}>
+                        <Badge variant="outline" className="capitalize flex-shrink-0">{item.topic}</Badge>
+                      </Link>
                       <ExpandableText
                         text={item.reason || ""}
                         maxLength={60}
@@ -243,12 +254,13 @@ export default async function HomePage() {
               </CardTitle>
               <CardDescription>
                 Browse researcher profiles. See their claims, topics, and
-                prediction accuracy over time.
+                linked source evidence.
               </CardDescription>
             </CardHeader>
           </Card>
         </Link>
       </div>
+    </div>
     </div>
   );
 }

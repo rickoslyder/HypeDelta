@@ -1,9 +1,12 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { getClaims } from "@/lib/db";
+import { getClaims, getClaimFacets } from "@/lib/db";
+import { FreshnessBanner } from "@/components/freshness-banner";
 import { Pagination } from "@/components/ui/pagination";
 import { SearchInput } from "@/components/search-input";
+import { claimDetailHref, claimsFilterHref, researcherHref } from "@/lib/claim-href";
+import { authorRoleToSide } from "@hypedelta/author-side";
 import { MessageSquare, Calendar, User, ExternalLink, X } from "lucide-react";
 import Link from "next/link";
 
@@ -59,15 +62,27 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
     limit: ITEMS_PER_PAGE,
     offset,
   });
+  const facets = await getClaimFacets({
+    search: params.q,
+    days,
+    author: params.author,
+  });
+  const filterState = {
+    q: params.q,
+    topic: params.topic,
+    type: params.type,
+    days: params.days,
+    author: params.author,
+  };
 
   const totalPages = Math.ceil(total / ITEMS_PER_PAGE);
 
-  // Get unique topics and authors for filters
-  const uniqueTopics = [...new Set(claims.map((c) => c.topic))].filter(Boolean);
-  const uniqueAuthors = [...new Set(claims.map((c) => c.author_handle))].filter(Boolean);
-  const uniqueTypes = [...new Set(claims.map((c) => c.claim_type))].filter(Boolean);
+  const uniqueTopics = facets.topics;
+  const uniqueTypes = facets.types;
 
   return (
+    <div>
+      <FreshnessBanner />
     <div className="w-full px-4 md:px-8 lg:px-12 py-8">
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-2">Claims Browser</h1>
@@ -95,7 +110,7 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
             <div className="space-y-2">
               <label className="text-sm font-medium">Topic</label>
               <div className="flex flex-wrap gap-1">
-                <Link href="/claims">
+                <Link href={claimsFilterHref(filterState, { topic: null })}>
                   <Badge
                     variant={!params.topic ? "default" : "outline"}
                     className="cursor-pointer"
@@ -104,7 +119,7 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
                   </Badge>
                 </Link>
                 {uniqueTopics.slice(0, 8).map((topic) => (
-                  <Link key={topic} href={`/claims?topic=${topic}`}>
+                  <Link key={topic} href={claimsFilterHref(filterState, { topic, page: null })}>
                     <Badge
                       variant={params.topic === topic ? "default" : "outline"}
                       className="cursor-pointer capitalize"
@@ -120,7 +135,7 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
             <div className="space-y-2">
               <label className="text-sm font-medium">Type</label>
               <div className="flex flex-wrap gap-1">
-                <Link href={params.topic ? `/claims?topic=${params.topic}` : "/claims"}>
+                <Link href={claimsFilterHref(filterState, { type: null })}>
                   <Badge
                     variant={!params.type ? "default" : "outline"}
                     className="cursor-pointer"
@@ -131,7 +146,7 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
                 {uniqueTypes.map((type) => (
                   <Link
                     key={type}
-                    href={`/claims?${params.topic ? `topic=${params.topic}&` : ""}type=${type}`}
+                    href={claimsFilterHref(filterState, { type, page: null })}
                   >
                     <Badge
                       variant={params.type === type ? "default" : "outline"}
@@ -151,7 +166,7 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
                 {[7, 14, 30, 90].map((d) => (
                   <Link
                     key={d}
-                    href={`/claims?${params.topic ? `topic=${params.topic}&` : ""}${params.type ? `type=${params.type}&` : ""}days=${d}`}
+                    href={claimsFilterHref(filterState, { days: String(d), page: null })}
                   >
                     <Badge
                       variant={days === d ? "default" : "outline"}
@@ -231,9 +246,9 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
                     <Badge
                       variant="outline"
                       className={
-                        ["lab-researcher", "academic"].includes(claim.author_category)
+                        authorRoleToSide(claim.author_category) === "lab"
                           ? "border-blue-500 text-blue-600"
-                          : ["critic", "critics"].includes(claim.author_category)
+                          : authorRoleToSide(claim.author_category) === "critic"
                           ? "border-orange-500 text-orange-600"
                           : "border-gray-400 text-gray-600"
                       }
@@ -244,7 +259,11 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
                 </div>
 
                 {/* Claim content */}
-                <p className="text-sm leading-relaxed">{claim.claim_text}</p>
+                <p className="text-sm leading-relaxed">
+                  <Link href={claimDetailHref(claim.id)} className="hover:underline">
+                    {claim.claim_text}
+                  </Link>
+                </p>
 
                 {/* Supporting quote if available */}
                 {claim.supporting_quote && (
@@ -255,14 +274,14 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
 
                 {/* Metadata */}
                 <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
-                  {claim.author_handle && claim.author_handle !== "null" ? (
+                  {claim.researcher_slug || (claim.author_handle && claim.author_handle !== "null") ? (
                     <div className="flex items-center gap-1">
                       <User className="h-3 w-3" />
                       <Link
-                        href={`/researchers/${claim.author_handle}`}
+                        href={researcherHref(claim.researcher_slug || claim.author_handle || "")}
                         className="hover:underline"
                       >
-                        @{claim.author_handle}
+                        {claim.researcher_display_name || claim.author_handle}
                       </Link>
                     </div>
                   ) : claim.author_category ? (
@@ -324,6 +343,7 @@ export default async function ClaimsPage({ searchParams }: ClaimsPageProps) {
           />
         </div>
       )}
+    </div>
     </div>
   );
 }

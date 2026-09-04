@@ -28,6 +28,7 @@ export type ContentCategory =
   | 'anthropic'
   | 'openai'
   | 'deepmind'
+  | 'google'
   | 'meta'
   | 'xai'
   | 'mistral'
@@ -73,22 +74,10 @@ export interface FilteredContent extends RawContent {
 // TOPIC & CONTENT TYPE
 // ============================================================================
 
-export type Topic = 
-  | 'scaling'
-  | 'reasoning'
-  | 'agents'
-  | 'safety'
-  | 'interpretability'
-  | 'multimodal'
-  | 'rlhf'
-  | 'robotics'
-  | 'benchmarks'
-  | 'infrastructure'
-  | 'policy'
-  | 'general'
-  | 'other';
+import type { CanonicalTopic } from './topic-taxonomy';
+export type Topic = CanonicalTopic;
 
-export type ContentType = 
+export type ContentType =
   | 'prediction'
   | 'research-hint'
   | 'opinion'
@@ -130,6 +119,7 @@ export interface ExtractedClaim {
   claimText: string;
   claimType: ClaimType;
   topic: Topic;
+  rawTopic?: string | null;
   stance: Stance;
   bullishness: number;        // 0.0 (max bearish) to 1.0 (max bullish)
   confidence: number;          // 0.0 to 1.0 - how confident the author seems
@@ -170,19 +160,8 @@ export interface Disagreement {
   criticPosition: string;
 }
 
-export interface TopicSynthesis {
-  topic: Topic;
-  claimCount: number; // Number of claims analyzed for this topic
-  labConsensus: string;
-  criticConsensus: string;
-  keyAgreements: string[];
-  keyDisagreements: Disagreement[];
-  hypeDelta: HypeDelta;
-  emergingNarratives: string[];
-  notablePredictions: Prediction[];
-  evidenceQuality: number;
-  synthesisNarrative?: string;
-}
+import type { TopicSynthesis } from './topic-synthesis';
+export type { TopicSynthesis };
 
 export interface TopicHypeScore {
   topic: Topic;
@@ -211,6 +190,7 @@ export interface TopicConsensus {
 // ============================================================================
 
 export type PredictionStatus = 
+  | 'pending'
   | 'verified'
   | 'falsified'
   | 'partially-verified'
@@ -226,6 +206,7 @@ export interface Prediction {
   confidence: number;
   timeframe: Timeframe;
   topic: Topic;
+  rawTopic?: string | null;
   madeAt: Date;
   targetDate?: Date;          // derived from timeframe
   verifiedAt?: Date;
@@ -285,9 +266,14 @@ export interface SynthesisResult {
 export interface ProcessingResult {
   processed: number;
   relevant: number;
+  /** Persisted claim count (compatibility alias of persistedClaims). */
   claimsExtracted: number;
   timestamp: Date;
   errors?: string[];
+  agentOutputs: number;
+  admittedClaims: number;
+  rejectedClaims: number;
+  persistedClaims: number;
 }
 
 export interface BatchResult<T> {

@@ -1,0 +1,95 @@
+# Canonical existing-production stack contract for HypeDelta.
+# Images are immutable references supplied at deploy time via WEB_IMAGE / WORKER_IMAGE.
+# Secrets are runtime-only required interpolations — no defaults.
+#
+# Networks (external):
+#   - ai-intel-network  (private app/db/worker)
+#   - traefik_proxy     (web edge only)
+#
+# Volumes (external, existing):
+#   - hypedelta_pgdata
+#   - hypedelta_worker_digests
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ai-intel-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aiintel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ai_intel
+    volumes:
+      - hypedelta_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiintel -d ai_intel"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai-intel-network
+
+  worker:
+    image: ${WORKER_IMAGE:?WORKER_IMAGE is required}
+    container_name: ai-intel-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      TWITTER_API_KEY: ${TWITTER_API_KEY:?TWITTER_API_KEY is required}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY is required}
+      KIMI_CODING_API_KEY: ${KIMI_CODING_API_KEY:?KIMI_CODING_API_KEY is required}
+      # Canonical production restarts skip costly initial fetch/process by default.
+      # Set WORKER_RUN_INITIAL_CYCLE=true to restore legacy startup behavior.
+      WORKER_RUN_INITIAL_CYCLE: "${WORKER_RUN_INITIAL_CYCLE:-false}"
+      OLLAMA_URL: http://ollama:11434
+    volumes:
+      # Named volume only — do not bind-mount ./data (would shadow image sources.json)
+      - worker_digests:/app/data/digests
+    networks:
+      - ai-intel-network
+
+  web:
+    image: ${WEB_IMAGE:?WEB_IMAGE is required}
+    container_name: hypedelta
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:?ADMIN_SESSION_SECRET is required}
+    networks:
+      - ai-intel-network
+      - traefik_proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_proxy"
+      - "traefik.http.routers.hypedelta-http.rule=Host(`hypedelta.rbnk.uk`)"
+      - "traefik.http.routers.hypedelta-http.entrypoints=web"
+      - "traefik.http.routers.hypedelta-http.middlewares=redirect-to-https@file"
+      - "traefik.http.routers.hypedelta.rule=Host(`hypedelta.rbnk.uk`)"
+      - "traefik.http.routers.hypedelta.entrypoints=websecure"
+      - "traefik.http.routers.hypedelta.tls.certresolver=cf"
+      - "traefik.http.services.hypedelta.loadbalancer.server.port=3000"
+
+volumes:
+  hypedelta_pgdata:
+    name: hypedelta_pgdata
+    external: true
+  worker_digests:
+    name: hypedelta_worker_digests
+    external: true
+
+networks:
+  ai-intel-network:
+    name: ai-intel-network
+    external: true
+  traefik_proxy:
+    name: traefik_proxy
+    external: true

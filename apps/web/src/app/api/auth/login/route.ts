@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateAuthToken, verifyAdminPassword } from "@/lib/auth";
+import {
+  generateAuthToken,
+  getAdminSessionSecret,
+  isAdminAuthConfigured,
+  verifyAdminPassword,
+} from "@/lib/auth";
 
 // Simple rate limiting - track failed attempts per IP
 const failedAttempts = new Map<string, { count: number; lastAttempt: number }>();
@@ -52,10 +57,10 @@ export async function POST(request: NextRequest) {
     }
 
     const { password } = await request.json();
-    const expectedPassword = process.env.ADMIN_PASSWORD;
+    const sessionSecret = getAdminSessionSecret();
 
-    // Fail closed: admin access must be explicitly configured.
-    if (!expectedPassword) {
+    // Fail closed: both login credential and session secret must be configured.
+    if (!isAdminAuthConfigured() || !sessionSecret) {
       return NextResponse.json(
         { error: "Admin access is not configured" },
         { status: 503 }
@@ -74,9 +79,9 @@ export async function POST(request: NextRequest) {
     // Clear failed attempts on success
     clearFailedAttempts(ip);
 
-    // Generate secure token (HMAC-signed with the password as key; the token
+    // Generate secure token (HMAC-signed with ADMIN_SESSION_SECRET; the token
     // never contains the password itself)
-    const token = await generateAuthToken(expectedPassword);
+    const token = await generateAuthToken(sessionSecret);
 
     // Set auth cookie with secure token
     const response = NextResponse.json({ success: true });

@@ -1,46 +1,29 @@
 import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { getResearchers } from "@/lib/db";
+import { getResearchers, RESEARCHER_PUBLIC_WINDOW_DAYS } from "@/lib/db";
+import { researcherHref } from "@/lib/claim-href";
 import { Users, MessageSquare, TrendingUp, Building2 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-// Lab categories from major AI organizations
-const LAB_CATEGORIES = [
-  "openai", "anthropic", "deepmind", "google", "meta", "nvidia",
-  "huggingface", "ai2", "xai", "mistral", "lab-researcher"
-];
-
-// Critic/skeptic categories
-const CRITIC_CATEGORIES = ["critic", "critics", "academic"];
-
 export default async function ResearchersPage() {
-  const researchers = await getResearchers(30);
+  const researchers = await getResearchers(RESEARCHER_PUBLIC_WINDOW_DAYS);
 
-  // Group by category type
-  const labResearchers = researchers.filter((r) =>
-    LAB_CATEGORIES.includes(r.category?.toLowerCase() || "")
-  );
-  const critics = researchers.filter((r) =>
-    CRITIC_CATEGORIES.includes(r.category?.toLowerCase() || "")
-  );
-  const independents = researchers.filter(
-    (r) =>
-      !LAB_CATEGORIES.includes(r.category?.toLowerCase() || "") &&
-      !CRITIC_CATEGORIES.includes(r.category?.toLowerCase() || "")
-  );
+  const labResearchers = researchers.filter((r) => r.side === "lab");
+  const critics = researchers.filter((r) => r.side === "critic");
+  const independents = researchers.filter((r) => r.side === "other");
 
   return (
     <div className="w-full px-4 md:px-8 lg:px-12 py-8">
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-2">Researchers</h1>
         <p className="text-muted-foreground">
-          Browse AI researchers and critics. See their claims and prediction accuracy.
+          Browse AI researchers and critics. See their claims, topics, and source evidence
+          from the last {RESEARCHER_PUBLIC_WINDOW_DAYS} days.
         </p>
       </div>
 
-      {/* Summary stats */}
       <div className="grid gap-4 md:grid-cols-3 mb-8">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -49,9 +32,7 @@ export default async function ResearchersPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{labResearchers.length}</div>
-            <p className="text-xs text-muted-foreground">
-              From major AI labs
-            </p>
+            <p className="text-xs text-muted-foreground">From major AI labs</p>
           </CardContent>
         </Card>
         <Card>
@@ -61,9 +42,7 @@ export default async function ResearchersPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{critics.length}</div>
-            <p className="text-xs text-muted-foreground">
-              Independent critics and skeptics
-            </p>
+            <p className="text-xs text-muted-foreground">Independent critics and skeptics</p>
           </CardContent>
         </Card>
         <Card>
@@ -76,13 +55,12 @@ export default async function ResearchersPage() {
               {researchers.reduce((sum, r) => sum + Number(r.claim_count), 0)}
             </div>
             <p className="text-xs text-muted-foreground">
-              In the last 30 days
+              In the last {RESEARCHER_PUBLIC_WINDOW_DAYS} days
             </p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Lab Researchers Section */}
       {labResearchers.length > 0 && (
         <div className="mb-8">
           <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
@@ -97,7 +75,6 @@ export default async function ResearchersPage() {
         </div>
       )}
 
-      {/* Critics Section */}
       {critics.length > 0 && (
         <div className="mb-8">
           <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
@@ -112,12 +89,11 @@ export default async function ResearchersPage() {
         </div>
       )}
 
-      {/* Independent Researchers Section */}
       {independents.length > 0 && (
         <div className="mb-8">
           <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
             <TrendingUp className="h-5 w-5 text-green-500" />
-            Independent Researchers
+            Other Researchers
           </h2>
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {independents.map((researcher) => (
@@ -143,8 +119,8 @@ export default async function ResearchersPage() {
 interface ResearcherCardProps {
   researcher: {
     handle: string;
-    name: string | null;
-    category: string | null;
+    name: string;
+    side: "lab" | "critic" | "other";
     affiliation: string | null;
     claim_count: number;
     avg_bullishness: number | null;
@@ -156,35 +132,30 @@ function ResearcherCard({ researcher }: ResearcherCardProps) {
   const bullishness = Number(researcher.avg_bullishness) || 0.5;
   const claimCount = Number(researcher.claim_count);
   const predictionCount = Number(researcher.prediction_count);
-  const categoryLower = researcher.category?.toLowerCase() || "";
-  const isLab = LAB_CATEGORIES.includes(categoryLower);
-  const isCritic = CRITIC_CATEGORIES.includes(categoryLower);
+  const isLab = researcher.side === "lab";
+  const isCritic = researcher.side === "critic";
 
   return (
-    <Link href={`/researchers/${researcher.handle}`}>
+    <Link href={researcherHref(researcher.handle)}>
       <Card className="hover:bg-accent transition-colors cursor-pointer h-full">
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
-            <span className="text-lg">@{researcher.handle}</span>
+            <span className="text-lg">{researcher.name}</span>
             <Badge
               variant={isLab ? "default" : isCritic ? "secondary" : "outline"}
               className="capitalize"
             >
-              {researcher.category?.replace("_", " ") || "Unknown"}
+              {researcher.side}
             </Badge>
           </CardTitle>
-          {(researcher.name || researcher.affiliation) && (
-            <CardDescription>
-              {researcher.name}
-              {researcher.name && researcher.affiliation && " • "}
-              {researcher.affiliation}
-            </CardDescription>
+          {researcher.affiliation && (
+            <CardDescription>{researcher.affiliation}</CardDescription>
           )}
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
             <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Claims (30d)</span>
+              <span className="text-muted-foreground">Claims (90d)</span>
               <span className="font-medium">{claimCount}</span>
             </div>
             {predictionCount > 0 && (

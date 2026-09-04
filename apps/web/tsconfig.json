@@ -21,7 +21,10 @@
     "paths": {
       "@/*": ["./src/*"],
       "@hypedelta/types": ["../../src/types.ts"],
-      "@hypedelta/storage": ["../../src/storage.ts"]
+      "@hypedelta/storage": ["../../src/storage.ts"],
+      "@hypedelta/author-side": ["../../src/author-side.ts"],
+      "@hypedelta/researcher-identity": ["../../src/researcher-identity.ts"],
+      "@hypedelta/topic-synthesis": ["../../src/topic-synthesis.ts"]
     }
   },
   "include": [

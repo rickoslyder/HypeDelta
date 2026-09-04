@@ -1,9 +1,11 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
-import { getClaims, getResearchers, getPredictions } from "@/lib/db";
+import { getClaims, getResearchers, getResearcherPredictions, RESEARCHER_PUBLIC_WINDOW_DAYS } from "@/lib/db";
+import { claimDetailHref, researcherHref } from "@/lib/claim-href";
+import { isHttpUrlIdentifier } from "@hypedelta/researcher-identity";
 import { Calendar, ExternalLink, MessageSquare, TrendingUp, Target } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -16,23 +18,38 @@ export default async function ResearcherPage({ params }: ResearcherPageProps) {
   const { handle } = await params;
   const decodedHandle = decodeURIComponent(handle);
 
-  // Get researcher info and claims
-  const [researchers, claimsResult, predictions] = await Promise.all([
-    getResearchers(365), // Get all researchers
-    getClaims({ author: decodedHandle, days: 90, limit: 50 }),
-    getPredictions({ author: decodedHandle, limit: 20 }),
+  const researchers = await getResearchers(RESEARCHER_PUBLIC_WINDOW_DAYS);
+  const researcher = researchers.find(
+    (r) => r.handle === decodedHandle || r.source_identifiers.includes(decodedHandle),
+  );
+
+  if (researcher && researcher.handle !== decodedHandle) {
+    redirect(researcherHref(researcher.handle));
+  }
+
+  const lookup = researcher?.handle || decodedHandle;
+  const [claimsResult, predictions] = await Promise.all([
+    getClaims({ author: lookup, days: RESEARCHER_PUBLIC_WINDOW_DAYS, limit: 50 }),
+    getResearcherPredictions(lookup, RESEARCHER_PUBLIC_WINDOW_DAYS),
   ]);
   const claims = claimsResult.claims;
+  const claimTotal = claimsResult.total;
+  const canonicalSlug = researcher?.handle || claims[0]?.researcher_slug;
+  if (canonicalSlug && canonicalSlug !== decodedHandle) {
+    redirect(researcherHref(canonicalSlug));
+  }
 
-  const researcher = researchers.find((r) => r.handle === decodedHandle);
+  const rawDisplay = researcher?.name || claims[0]?.researcher_display_name || decodedHandle;
+  const displayName = isHttpUrlIdentifier(rawDisplay) ? "Unknown researcher" : rawDisplay;
 
   if (!researcher && claims.length === 0) {
     notFound();
   }
 
   const bullishness = Number(researcher?.avg_bullishness) || 0.5;
+  const predictionCount = Number(researcher?.prediction_count ?? predictions.length);
 
-  // Group claims by topic
+  // Group claims by topic (from the loaded page; headline count uses total)
   const claimsByTopic = claims.reduce((acc, claim) => {
     const topic = claim.topic || "other";
     if (!acc[topic]) acc[topic] = [];
@@ -50,26 +67,26 @@ export default async function ResearcherPage({ params }: ResearcherPageProps) {
       <Breadcrumb
         items={[
           { label: "Researchers", href: "/researchers" },
-          { label: `@${decodedHandle}` },
+          { label: displayName },
         ]}
       />
 
       {/* Header */}
       <div className="mb-8">
         <div className="flex flex-wrap items-center gap-4 mb-2">
-          <h1 className="text-3xl font-bold">@{decodedHandle}</h1>
+          <h1 className="text-3xl font-bold">{displayName}</h1>
           {researcher && (
             <Badge
               variant={
-                researcher.category === "lab-researcher"
+                researcher.side === "lab"
                   ? "default"
-                  : researcher.category === "critic"
+                  : researcher.side === "critic"
                   ? "secondary"
                   : "outline"
               }
               className="capitalize"
             >
-              {researcher.category?.replace("_", " ") || "Unknown"}
+              {researcher.side}
             </Badge>
           )}
         </div>
@@ -92,9 +109,10 @@ export default async function ResearcherPage({ params }: ResearcherPageProps) {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{claims.length}</div>
+            <div className="text-2xl font-bold">{claimsResult.total}</div>
           </CardContent>
         </Card>
+        {predictionCount > 0 && (
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium flex items-center gap-2">
@@ -103,9 +121,10 @@ export default async function ResearcherPage({ params }: ResearcherPageProps) {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{predictions.length}</div>
+            <div className="text-2xl font-bold">{predictionCount}</div>
           </CardContent>
         </Card>
+        )}
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium flex items-center gap-2">
@@ -137,7 +156,10 @@ export default async function ResearcherPage({ params }: ResearcherPageProps) {
           <Card>
             <CardHeader>
               <CardTitle>Recent Claims</CardTitle>
-              <CardDescription>Claims extracted over the last 90 days</CardDescription>
+              <CardDescription>
+                {claimTotal} claims extracted over the last {RESEARCHER_PUBLIC_WINDOW_DAYS} days
+                {claims.length < claimTotal ? ` (showing ${claims.length})` : ""}
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
@@ -168,7 +190,11 @@ export default async function ResearcherPage({ params }: ResearcherPageProps) {
                           </Badge>
                         )}
                       </div>
-                      <p className="text-sm mb-2">{claim.claim_text}</p>
+                      <p className="text-sm mb-2">
+                        <Link href={claimDetailHref(claim.id)} className="hover:underline">
+                          {claim.claim_text}
+                        </Link>
+                      </p>
                       <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                         <div className="flex items-center gap-1">
                           <Calendar className="h-3 w-3" />
@@ -234,6 +260,36 @@ export default async function ResearcherPage({ params }: ResearcherPageProps) {
 
         {/* Sidebar */}
         <div className="space-y-6">
+          {researcher && researcher.source_identifiers.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Sources</CardTitle>
+                <CardDescription>Feed and account provenance</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ul className="space-y-2 text-sm">
+                  {researcher.source_identifiers.map((identifier) => (
+                    <li key={identifier} className="break-all">
+                      {/^https?:/i.test(identifier) ? (
+                        <a
+                          href={identifier}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 hover:underline"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          Source feed
+                        </a>
+                      ) : (
+                        identifier
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Top Topics */}
           <Card>
             <CardHeader>
