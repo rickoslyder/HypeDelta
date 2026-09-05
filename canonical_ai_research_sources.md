@@ -264,6 +264,7 @@ This comprehensive reference catalogues **200+ AI researchers, critics, and thou
 | Newsletter | URL | Author(s) | Focus | Frequency | Signal Quality |
 |------------|-----|-----------|-------|-----------|----------------|
 | **The Rundown AI** | therundown.ai | Rowan Cheung | AI news overview | Daily | Medium-high, comprehensive |
+| **AI Weekly** | aiweekly.co | Alexis Dufresne | Models, agents, funding, policy, and research ranked from expert reading signals | 3x/week | High-signal curation for AI professionals |
 | **Ben's Bites** | bensbites.beehiiv.com | Ben Tossell | AI news, product launches | Daily | Medium-high, business perspective |
 | **Last Week in AI** | lastweekin.ai | Multiple | Weekly summaries | Weekly | Medium signal |
 | **NLP News** | newsletter.ruder.io | Sebastian Ruder (DeepMind) | NLP advances, multilingual | Monthly | High signal, NLP-specific |
